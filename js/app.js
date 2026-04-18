@@ -1,0 +1,1791 @@
+/**
+ * app.js — Application entry point.
+ * Initializes all modules, wires up events, manages file open/save.
+ * Supports Chrome/Edge File System Access API with Firefox fallback.
+ */
+
+import { TourMap, MapEntry } from './dataModel.js';
+import { parseMapFile } from './mapFileParser.js';
+import { serializeMapFile } from './mapFileSerializer.js';
+import { LineList } from './lineList.js';
+import { NavGrid } from './navGrid.js';
+import { ImageBrowser } from './imageBrowser.js';
+import { PropertiesPanel } from './propertiesPanel.js';
+import { RawLineEditor } from './rawLineEditor.js';
+import { TextView } from './textView.js';
+import { LocaleEditor } from './localeEditor.js';
+import { computeAutoLinks } from './autoLinker.js';
+import { MapValidator } from './mapValidator.js';
+import { Wizard } from './wizard.js';
+
+// ---- Global Constants for Bidirectional Links ----
+const OPPOSITE_CMDS = {
+  'f': 'b', 'b': 'f',
+  'l': 'r', 'r': 'l',
+  'u': 'd', 'd': 'u',
+  'n': 'p', 'p': 'n',
+  'q': 'w', 'w': 'q',
+  'e': 'j', 'j': 'e',
+  'o': 'c', 'c': 'o',
+  'a': 'a'
+};
+
+const OPPOSITE_HEADINGS = {
+  'N': 'S', 'S': 'N',
+  'E': 'W', 'W': 'E',
+  'NE': 'SW', 'SW': 'NE',
+  'NW': 'SE', 'SE': 'NW',
+  'NNE': 'SSW', 'SSW': 'NNE',
+  'ENE': 'WSW', 'WSW': 'ENE',
+  'ESE': 'WNW', 'WNW': 'ESE',
+  'SSE': 'NNW', 'NNW': 'SSE'
+};
+
+function showToast(message) {
+  const toast = document.getElementById('toast-notification');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.classList.remove('hidden');
+  toast.classList.add('show');
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.classList.add('hidden'), 300);
+  }, 3500);
+}
+
+function inferHeading(sourceEntry, targetEntry, command) {
+  if (!targetEntry.heading && sourceEntry && sourceEntry.heading) {
+    const headings8 = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    const h16 = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    
+    if (command === 'f' || command === 'b') {
+      targetEntry.heading = sourceEntry.heading;
+      return true;
+    } else if (command === 'l') {
+       // Guess rotation left (Clockwise in our array order N, NNE, NE...)
+       // Wait, HEADINGS in dataModel is N, NNW, NW... (Counter-clockwise)
+       // Let's check HEADINGS in dataModel.js line 35.
+       // 0:N, 1:NNW, 2:NW ...
+       // So N -> NW is +2.
+       const curH = sourceEntry.heading.toUpperCase();
+       const hIndex = h16.indexOf(curH);
+       if (hIndex !== -1) {
+         // In h16, N is 0. NE is 2. E is 4.
+         // Wait, h16 I wrote above is CW: N, NNE, NE...
+         // Let's stick to the one in dataModel: 0:N, 1:NNW, 2:NW, 3:WNW, 4:W, 5:WSW, 6:SW, 7:SSW, 8:S, 9:SSE, 10:SE, 11:ESE, 12:E, 13:ENE, 14:NE, 15:NNE
+         const currentIdx = [
+           'N', 'NNW', 'NW', 'WNW', 'W', 'WSW', 'SW', 'SSW', 
+           'S', 'SSE', 'SE', 'ESE', 'E', 'ENE', 'NE', 'NNE'
+         ].indexOf(curH);
+         if (currentIdx !== -1) {
+            // Left in CCW order is +2 (e.g. N -> NW)
+            targetEntry.heading = [
+              'N', 'NNW', 'NW', 'WNW', 'W', 'WSW', 'SW', 'SSW', 
+              'S', 'SSE', 'SE', 'ESE', 'E', 'ENE', 'NE', 'NNE'
+            ][(currentIdx + 2) % 16];
+            return true;
+         }
+       }
+    } else if (command === 'r') {
+       const curH = sourceEntry.heading.toUpperCase();
+       const currentIdx = [
+         'N', 'NNW', 'NW', 'WNW', 'W', 'WSW', 'SW', 'SSW', 
+         'S', 'SSE', 'SE', 'ESE', 'E', 'ENE', 'NE', 'NNE'
+       ].indexOf(curH);
+       if (currentIdx !== -1) {
+          // Right in CCW order is -2 (e.g. N -> NE)
+          targetEntry.heading = [
+            'N', 'NNW', 'NW', 'WNW', 'W', 'WSW', 'SW', 'SSW', 
+            'S', 'SSE', 'SE', 'ESE', 'E', 'ENE', 'NE', 'NNE'
+          ][(currentIdx - 2 + 16) % 16];
+          return true;
+       }
+    } else if (command === 'a') {
+      const opp = OPPOSITE_HEADINGS[sourceEntry.heading.toUpperCase()];
+      if (opp) {
+        targetEntry.heading = opp;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function assignCustomImageIfNeeded(entry, imageName) {
+  if (!imageName) return;
+  const idStr = entry.id.toString().padStart(4, '0');
+  const defaultName = tourMap.filenamePrefix + idStr + '.jpg';
+  // Strip paths from imageName to compare exactly, though imageBrowser sends full paths if nested
+  const basename = imageName.split('/').pop();
+  if (basename !== defaultName || imageName.includes('/')) {
+    entry.customImage = imageName;
+  }
+}
+
+// ---- Global State ----
+const tourMap = new TourMap();
+let fileHandle = null;     // For Chrome save-in-place
+let baseDirHandle = null;  // For auto-archiving logic
+let selectedIndex = -1;
+let isDirty = false;
+
+// ---- Feature Detection ----
+const supportsFileSystemAccess = ('showOpenFilePicker' in window);
+
+// ---- UI Elements ----
+const btnOpenMap = document.getElementById('btn-open-map');
+const btnOpenImages = document.getElementById('btn-open-images');
+const btnSave = document.getElementById('btn-save');
+const btnSaveAs = document.getElementById('btn-save-as');
+const btnAddLocale = document.getElementById('btn-add-locale');
+const btnAddLine = document.getElementById('btn-add-line');
+const btnDeleteLine = document.getElementById('btn-delete-line');
+const btnToggleMode = document.getElementById('btn-toggle-mode');
+const btnTextToggle = document.getElementById('btn-text-view');
+const btnCheckout = document.getElementById('btn-checkout');
+const btnCloseCheckout = document.getElementById('btn-close-checkout');
+const btnDoneCheckout = document.getElementById('btn-done-checkout');
+const btnFixAllOmissions = document.getElementById('btn-fix-all-omissions');
+const btnCloseIssueDetails = document.getElementById('btn-close-issue-details');
+const btnCancelIssueDetails = document.getElementById('btn-cancel-issue-details');
+const issueCountEl = document.getElementById('issue-count');
+const checkoutModal = document.getElementById('checkout-modal');
+const issueDetailsModal = document.getElementById('issue-details-modal');
+const checkoutResults = document.getElementById('checkout-results');
+const navGridContainer = document.getElementById('nav-grid-container');
+const localeEditorContainer = document.getElementById('locale-editor-container');
+const fileInputMap = document.getElementById('file-input-map');
+const fileInputImages = document.getElementById('file-input-images');
+const inputPrefix = document.getElementById('input-prefix');
+const inputDigits = document.getElementById('input-digits');
+
+// ---- Initialize Modules ----
+const lineList = new LineList(
+  document.getElementById('line-list'),
+  tourMap,
+  onLineSelected
+);
+
+const imageBrowser = new ImageBrowser(
+  document.getElementById('image-browser'),
+  tourMap
+);
+
+const navGrid = new NavGrid(
+  tourMap,
+  onNavigateToPhoto,
+  onLinkChanged,
+  (photoId) => imageBrowser.getImageUrlById(photoId),
+  onCycleHeading
+);
+navGrid.onPrimaryDrop = onPrimaryDrop;
+
+const propertiesPanel = new PropertiesPanel(
+  tourMap,
+  onEntryPropertyChanged
+);
+
+const localeEditor = new LocaleEditor(
+  tourMap,
+  onNavigateToPhoto,
+  onHeadingAssigned,
+  (photoId) => imageBrowser.getImageUrlById(photoId)
+);
+localeEditor.onLinkAsDoor = (idA, idB, currentIsB = false) => linkAsDoor(idA, idB, null, currentIsB);
+
+const rawLineEditor = new RawLineEditor(
+  tourMap,
+  onRawLineEdited
+);
+
+const textView = new TextView(
+  tourMap,
+  onTextViewChanged
+);
+
+const wizard = new Wizard({
+  onComplete: (config) => {
+    tourMap.filenamePrefix = config.prefix;
+    inputPrefix.value = config.prefix;
+    const digits = parseInt(document.getElementById('wiz-digits-input').value, 10);
+    tourMap.idPadding = isNaN(digits) ? 0 : digits;
+    inputDigits.value = tourMap.idPadding;
+    
+    if (config.initialMode === 'locale') {
+      onAddLocale();
+      setMode('locale');
+    } else {
+      setMode('view');
+    }
+    markDirty();
+    imageBrowser.render(); // Re-render to show updated IDs/used status
+  },
+  onCancel: () => {
+    // Falls back to empty map
+  }
+});
+
+inputPrefix.addEventListener('input', () => {
+  tourMap.filenamePrefix = inputPrefix.value;
+  markDirty();
+  imageBrowser.render();
+  refreshCurrentSelection();
+});
+
+inputDigits.addEventListener('input', () => {
+  tourMap.idPadding = parseInt(inputDigits.value, 10) || 0;
+  markDirty();
+  imageBrowser.render();
+  refreshCurrentSelection();
+});
+
+// ---- Event Wiring ----
+
+let currentMode = 'view'; // 'view' or 'locale'
+
+btnToggleMode.addEventListener('click', () => {
+  const entry = selectedIndex >= 0 ? tourMap.entries[selectedIndex] : null;
+
+  if (btnToggleMode.dataset.state === 'add') {
+    // Delegate to onAddLocale() which BFS-sweeps all connected neighbors
+    onAddLocale();
+    
+  } else {
+    setMode(currentMode === 'view' ? 'locale' : 'view');
+  }
+});
+
+function setMode(mode) {
+  currentMode = mode;
+  const entry = selectedIndex >= 0 ? tourMap.entries[selectedIndex] : null;
+
+  if (mode === 'locale') {
+    navGridContainer.classList.add('hidden');
+    localeEditorContainer.classList.remove('hidden');
+    btnToggleMode.innerHTML = '<span class="btn-icon">📷</span> View Mode';
+    btnToggleMode.dataset.state = 'view'; // Reset state
+    
+    // Hide view-specific properties
+    document.querySelectorAll('.view-only-prop').forEach(el => el.classList.add('hidden'));
+  } else {
+    // mode === 'view'
+    localeEditorContainer.classList.add('hidden');
+    navGridContainer.classList.remove('hidden');
+    
+    // Show view-specific properties
+    document.querySelectorAll('.view-only-prop').forEach(el => el.classList.remove('hidden'));
+    
+    const isUnassignedLink = entry && entry.type === 'link' && entry.localeId === null;
+    if (isUnassignedLink) {
+      btnToggleMode.innerHTML = '<span class="btn-icon">➕</span> Create Locale from Views';
+      btnToggleMode.dataset.state = 'add';
+    } else {
+      btnToggleMode.innerHTML = '<span class="btn-icon">🧭</span> Locale Mode';
+      btnToggleMode.dataset.state = 'locale';
+    }
+  }
+  
+  refreshCurrentSelection();
+}
+
+
+async function getFilesRecursively(dirHandle, path = '') {
+  let files = [];
+  for await (const entry of dirHandle.values()) {
+    // FIX: Skip 'supercededMaps' directory to avoid loading archived maps or images
+    if (entry.kind === 'directory' && entry.name === 'supercededMaps') {
+      continue;
+    }
+
+    if (entry.kind === 'file') {
+      const file = await entry.getFile();
+      // Attach the relative path (with forward slashes)
+      file.tourRelativePath = path + file.name;
+      files.push(file);
+    } else if (entry.kind === 'directory') {
+      const subFiles = await getFilesRecursively(entry, path + entry.name + '/');
+      files.push(...subFiles);
+    }
+  }
+  return files;
+}
+
+async function handleOpenTourFolder() {
+  if (!supportsFileSystemAccess) {
+    alert("Your browser does not support the File System Access API required for auto-archiving. Please use a modern Chromium-based browser.");
+    return;
+  }
+  
+  try {
+    const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    baseDirHandle = dirHandle;
+    
+    // Hide welcome screen, show main UI
+    document.getElementById('welcome-screen').classList.add('hidden');
+    document.getElementById('toolbar').classList.remove('hidden');
+    document.getElementById('main-content').classList.remove('hidden');
+    
+    const files = await getFilesRecursively(dirHandle);
+    
+    const candidates = files.filter(f => f.name.endsWith('.map') || f.name.endsWith('.js'));
+    let mapFile = null;
+
+    if (candidates.length > 0) {
+      mapFile = candidates.find(f => f.name === 'tour_links.js');
+      if (!mapFile) {
+        mapFile = candidates.find(f => f.name === 'tour_links.map');
+        if (!mapFile) {
+          mapFile = candidates[0];
+        }
+      }
+    }
+    
+    // Find the handle for the mapFile so we can save it later
+    fileHandle = null;
+    if (mapFile) {
+      for await (const entry of dirHandle.values()) {
+        if (entry.kind === 'file' && entry.name === mapFile.name) {
+          fileHandle = entry;
+          break;
+        }
+      }
+    }
+    
+    // Load all images from this folder first
+    imageBrowser.loadFromFileList(files);
+    
+    if (mapFile) {
+      const text = await mapFile.text();
+      loadMapFile(text);
+      inputPrefix.value = tourMap.filenamePrefix || '';
+    } else {
+      console.warn("No map file found. Starting empty map.");
+      loadMapFile('');
+      if (files.length > 0) {
+        wizard.start(files.map(f => f.name), baseDirHandle?.name);
+      }
+    }
+    
+  } catch (e) {
+    if (e.name !== 'AbortError') console.error(e);
+  }
+}
+
+document.getElementById('btn-start-tour').addEventListener('click', handleOpenTourFolder);
+btnOpenMap.addEventListener('click', handleOpenTourFolder);
+
+// Save
+btnSave.addEventListener('click', async () => {
+  let text = serializeMapFile({
+    title: tourMap.title,
+    filenamePrefix: tourMap.filenamePrefix,
+    entries: tourMap.entries
+  });
+
+  // Always wrap in JS and save to tour_links.js
+  text = `// Tour links definition:
+var embeddedData = \`
+${text}
+\`;  //   REQUIRED closing single quote is at left!!`;
+
+  if (supportsFileSystemAccess && baseDirHandle) {
+    try {
+      // 1. Check if we have an existing map file we should auto-archive
+      if (fileHandle) {
+        // Get or create supercededMaps directory
+        const superHandle = await baseDirHandle.getDirectoryHandle('supercededMaps', { create: true });
+        
+        // Compute YYMMDD_HHMMSS
+        const now = new Date();
+        const yy = String(now.getFullYear()).slice(-2);
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const dd = String(now.getDate()).padStart(2, '0');
+        const hh = String(now.getHours()).padStart(2, '0');
+        const min = String(now.getMinutes()).padStart(2, '0');
+        const ss = String(now.getSeconds()).padStart(2, '0');
+        const ts = `${yy}${mm}${dd}_${hh}${min}${ss}`;
+        const archiveName = `${ts}_${fileHandle.name}`;
+        
+        // Read old content
+        const oldFile = await fileHandle.getFile();
+        const oldText = await oldFile.text();
+        
+        // Write to archive
+        const archiveFileHandle = await superHandle.getFileHandle(archiveName, { create: true });
+        const archiveWritable = await archiveFileHandle.createWritable();
+        await archiveWritable.write(oldText);
+        await archiveWritable.close();
+      }
+
+      // 2. Always write to tour_links.js
+      fileHandle = await baseDirHandle.getFileHandle('tour_links.js', { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      markClean();
+    } catch (e) {
+      console.error('Save failed:', e);
+      downloadFile(text, 'tour_links.js');
+    }
+  } else {
+    downloadFile(text, 'tour_links.js');
+  }
+});
+
+// Save As
+btnSaveAs.addEventListener('click', async () => {
+  let text = serializeMapFile({
+    title: tourMap.title,
+    filenamePrefix: tourMap.filenamePrefix,
+    entries: tourMap.entries
+  });
+
+  text = `// Tour links definition:
+var embeddedData = \`
+${text}
+\`;  //   REQUIRED closing single quote is at left!!`;
+
+  if (supportsFileSystemAccess) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: 'tour_links.js',
+        types: [{
+          description: 'JS Wrapper Files',
+          accept: { 
+            'text/javascript': ['.js'] 
+          }
+        }]
+      });
+      fileHandle = handle;
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      markClean();
+    } catch (e) {
+      if (e.name !== 'AbortError') console.error(e);
+    }
+  } else {
+    downloadFile(text, 'tour_links.js');
+  }
+});
+
+function onAddLocale() {
+  if (!tourMap || !tourMap.entries) return;
+  
+  const newLocaleId = tourMap.getNextLocaleId();
+  const localeEntry = new MapEntry();
+  localeEntry.type = 'locale';
+  localeEntry.localeId = newLocaleId;
+  localeEntry.localeDescription = `Locale ${newLocaleId}`;
+  localeEntry.localeText = `Locale ${newLocaleId}`;
+
+  let insertIdx = tourMap.entries.length;
+  let hadLinkEntry = false;
+  if (selectedIndex >= 0) {
+    insertIdx = selectedIndex; // Insert BEFORE the selected item so it falls under it
+    // Actually if we insert at selectedIndex, the old selected becomes selectedIndex+1
+    const currentEntry = tourMap.entries[selectedIndex];
+    if (currentEntry.type === 'link') {
+      hadLinkEntry = true;
+      // 1. Compute auto-links for the sweep
+      computeAutoLinks(tourMap);
+
+      // 2. BFS to find connected unassigned photos
+      const members = [currentEntry];
+      const queue = [currentEntry];
+      const visited = new Set([currentEntry.id]);
+      
+      while (queue.length > 0) {
+        const curr = queue.shift();
+        // Only sweep in-place rotational commands (left, right, up, down, open, closed)
+        // DO NOT sweep f (forward), b (back), n (next), p (prev) as they leave the physical spot
+        ['l', 'r', 'u', 'd', 'o', 'c'].forEach(cmd => {
+          const targetId = curr.links[cmd] || (curr.autoLinks ? curr.autoLinks[cmd] : null);
+          if (targetId) {
+            const target = tourMap.findById(targetId);
+            if (target && target.localeId === null && !visited.has(targetId)) {
+               visited.add(targetId);
+               members.push(target);
+               queue.push(target);
+            }
+          }
+        });
+      }
+
+      console.log(`[Locale Sweep] Found ${members.length} members:`, members.map(m => m.id));
+
+      // 3. Assign locale and move them
+      // We want to insert them all after the new locale line.
+      // Smallest original index in this set is where we'll put the locale line.
+      const originalIndices = members.map(m => tourMap.entries.indexOf(m));
+      const firstIdx = Math.min(...originalIndices);
+      insertIdx = firstIdx;
+      
+      members.forEach(m => {
+        m.localeId = newLocaleId;
+        m.localeDescription = localeEntry.localeText;
+        m.markModified();
+      });
+
+      // 4. If none of the swept members have a heading, auto-assign headings sequentially around the compass
+      const hasAnyHeading = members.some(m => m.heading);
+      if (!hasAnyHeading && members.length > 0) {
+        // Find a starting point (e.g. currentEntry) and trace 'r' links to layout CCW
+        const ordered = [];
+        const seen = new Set();
+        let curr = currentEntry;
+        
+        while (curr && !seen.has(curr.id)) {
+          ordered.push(curr);
+          seen.add(curr.id);
+          const rightId = curr.links['r'] || (curr.autoLinks && curr.autoLinks['r']);
+          curr = rightId ? members.find(m => m.id === rightId) : null;
+        }
+        
+        // Pick up any stragglers not in the main 'r' loop
+        members.forEach(m => {
+          if (!seen.has(m.id)) ordered.push(m);
+        });
+
+        const headings8 = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+        // Distribute them evenly over the 8 headings
+        let step = Math.max(1, Math.floor(8 / ordered.length));
+        if (ordered.length >= 8) step = 1;
+        
+        let hIdx = 0;
+        ordered.forEach((m, i) => {
+           if (i < 8) {
+             m.heading = headings8[hIdx % 8];
+             hIdx += step;
+           } else {
+             // If more than 8, just assign the nearest 16-point or fallback
+             m.heading = 'N'; // Exceeds basic compass bounds, will stack
+           }
+        });
+      }
+
+      // 5. Move them all to be together at insertIdx + 1
+      // We sort members by their original index to preserve their relative order if possible
+      const originalIndicesLookup = new Map(members.map(m => [m.id, tourMap.entries.indexOf(m)]));
+      members.sort((a, b) => originalIndicesLookup.get(a.id) - originalIndicesLookup.get(b.id));
+      
+      members.forEach((m, i) => {
+        const currentIdx = tourMap.entries.indexOf(m);
+        if (currentIdx !== insertIdx + 1 + i) {
+          tourMap.moveEntry(currentIdx, insertIdx + 1 + i);
+        }
+      });
+      
+      // Update selectedIndex to the new position of the original currentEntry
+      selectedIndex = tourMap.entries.indexOf(currentEntry);
+    }
+  }
+  
+  tourMap.addEntry(localeEntry, insertIdx);
+  
+  markDirty();
+  lineList.render();
+  if (hadLinkEntry) {
+    // Reselect the photo (which moved forward by 1 due to the locale line shift)
+    lineList.select(selectedIndex + 1);
+  } else {
+    // No link was selected, select the locale header itself
+    lineList.select(insertIdx);
+  }
+  setMode('locale');
+  runValidation();
+}
+
+/**
+ * Creates a brand-new empty locale (no BFS sweep).
+ * The user can then drag images into the rosette manually.
+ * Always appends at the end so it doesn't displace entries from the current locale.
+ */
+function onNewEmptyLocale() {
+  if (!tourMap || !tourMap.entries) return;
+
+  const newLocaleId = tourMap.getNextLocaleId();
+  const localeEntry = new MapEntry();
+  localeEntry.type = 'locale';
+  localeEntry.localeId = newLocaleId;
+  localeEntry.localeDescription = `Locale ${newLocaleId}`;
+  localeEntry.localeText = `Locale ${newLocaleId}`;
+
+  // Always append at the end so we don't displace entries from the current locale
+  const insertIdx = tourMap.entries.length;
+  tourMap.addEntry(localeEntry, insertIdx);
+
+  markDirty();
+  lineList.render();
+  // Select the newly created locale header
+  lineList.select(insertIdx);
+  setMode('locale');
+  runValidation();
+}
+
+// Add new Locale (toolbar button creates an empty locale)
+btnAddLocale.addEventListener('click', () => {
+    onNewEmptyLocale();
+});
+
+btnCheckout.addEventListener('click', () => {
+    showCheckoutReport();
+});
+
+btnCloseCheckout.addEventListener('click', () => checkoutModal.classList.add('hidden'));
+btnDoneCheckout.addEventListener('click', () => checkoutModal.classList.add('hidden'));
+btnCloseIssueDetails.addEventListener('click', () => issueDetailsModal.classList.add('hidden'));
+btnCancelIssueDetails.addEventListener('click', () => issueDetailsModal.classList.add('hidden'));
+
+btnFixAllOmissions.addEventListener('click', () => {
+  const MAX_PASSES = 20;
+  let totalFixed = 0;
+  let passes = 0;
+
+  // Helper: apply union-of-links fix to a single omission issue
+  const fixOmissionGroup = (issue) => {
+    const allIds = [issue.id, ...issue.actionData.groupId];
+    let directionalCmds = ['l', 'r', 'u', 'd', 'a', 'b'];
+    if (issue.actionData.subtype === 'qw') directionalCmds = ['b'];
+
+    const unifiedLinks = {};
+    allIds.forEach(id => {
+      const e = tourMap.findById(id);
+      if (e) {
+        directionalCmds.forEach(cmd => {
+          if (e.links[cmd] && unifiedLinks[cmd] === undefined) {
+            unifiedLinks[cmd] = e.links[cmd];
+          }
+        });
+      }
+    });
+
+    allIds.forEach(id => {
+      const e = tourMap.findById(id);
+      if (e) {
+        directionalCmds.forEach(cmd => {
+          if (unifiedLinks[cmd]) {
+            if (cmd === 'b' && unifiedLinks[cmd] === e.id) return;
+            e.links[cmd] = unifiedLinks[cmd];
+          }
+        });
+        e.markModified();
+      }
+    });
+  };
+
+  // Loop until stable or max passes reached
+  while (passes < MAX_PASSES) {
+    passes++;
+    // Re-validate to get fresh list each pass
+    const currentIssues = MapValidator.validate(tourMap, imageBrowser.imageMap);
+    window.lastValidationResults = currentIssues;
+
+    const omissions = currentIssues.filter(i =>
+      i.category === 'Sync Omission' && i.actionData && i.actionData.groupId
+    );
+    if (omissions.length === 0) break;
+
+    // De-duplicate by group within this pass
+    const seenGroups = new Set();
+    omissions.forEach(issue => {
+      const allIds = [issue.id, ...issue.actionData.groupId];
+      const key = allIds.slice().sort().join('_') + '_' + issue.actionData.subtype;
+      if (seenGroups.has(key)) return;
+      seenGroups.add(key);
+      fixOmissionGroup(issue);
+      totalFixed++;
+    });
+  }
+
+  // Final refresh
+  runValidation();
+  showCheckoutReport();
+  refreshCurrentSelection();
+
+  // Inject a prominent result banner at the top of the report
+  const remaining = (window.lastValidationResults || []).filter(i => i.category === 'Sync Omission').length;
+  const conflicts = (window.lastValidationResults || []).filter(i => i.category === 'Sync Conflict').length;
+  const banner = document.createElement('div');
+  banner.style.cssText = 'background: var(--bg-elevated); border-left: 4px solid var(--success, #48bb78); padding: 10px 14px; margin-bottom: 12px; border-radius: var(--radius-sm); font-size: 13px;';
+  if (totalFixed > 0) {
+    banner.innerHTML = `✅ Fixed <strong>${totalFixed}</strong> sync omission group${totalFixed !== 1 ? 's' : ''} in ${passes} pass${passes !== 1 ? 'es' : ''}.`
+      + (conflicts > 0 ? ` <span style="color:var(--warning);">${conflicts} conflict${conflicts !== 1 ? 's' : ''} still require manual resolution.</span>` : '')
+      + (remaining > 0 ? ` <span style="color:var(--text-tertiary);">(${remaining} omission${remaining !== 1 ? 's' : ''} remain — may need 'Fix Problem' individually.)</span>` : '');
+  } else {
+    banner.innerHTML = `ℹ️ No sync omissions found to fix.`;
+  }
+  if (checkoutResults.firstChild) {
+    checkoutResults.insertBefore(banner, checkoutResults.firstChild);
+  } else {
+    checkoutResults.appendChild(banner);
+  }
+});
+
+// Add new link line
+btnAddLine.addEventListener('click', () => {
+  const entry = new MapEntry();
+  entry.type = 'link';
+
+  entry.id = suggestNextId();
+
+  // Insert after current selection, or at end
+  const insertAt = selectedIndex >= 0 ? selectedIndex + 1 : tourMap.entries.length;
+  tourMap.addEntry(entry, insertAt);
+  markDirty();
+  lineList.render();
+  lineList.select(insertAt);
+  runValidation();
+});
+
+// Delete selected line
+btnDeleteLine.addEventListener('click', () => {
+  if (selectedIndex < 0) return;
+  const entry = tourMap.entries[selectedIndex];
+  if (!entry) return;
+
+  // Confirm for link lines
+  if (entry.type === 'link') {
+    if (!confirm(`Delete link line #${entry.id}?`)) return;
+  }
+
+  const removedId = entry.id;
+  tourMap.removeEntry(selectedIndex);
+
+  // Strip all geometrical references pointing to this dead ID across the entire map
+  if (entry.type === 'link' && removedId !== null) {
+    tourMap.entries.forEach(e => {
+      if (e.type === 'link') {
+        Object.keys(e.links).forEach(cmd => {
+          if (e.links[cmd] === removedId) {
+            delete e.links[cmd];
+          }
+        });
+      }
+    });
+  }
+
+  markDirty();
+  computeAutoLinks(tourMap);
+
+  // Attempt to geometrically transition to an adjacent linked photo to prevent UI blackout
+  let nextSelectedId = null;
+  if (entry.type === 'link') {
+    const adjacentCmds = ['l', 'r', 'f', 'b', 'u', 'd', 'n', 'p'];
+    console.log(`[Delete] Transitioning from ID ${removedId}. Links:`, entry.links, "AutoLinks:", entry.autoLinks);
+
+    // First pass: highly prefer staying within the exact same Locale
+    for (const cmd of adjacentCmds) {
+      const targetId = entry.links[cmd] !== undefined ? entry.links[cmd] : entry.autoLinks[cmd];
+      if (targetId !== undefined) {
+         const targetEntry = tourMap.findById(targetId);
+         if (targetEntry && targetEntry.localeId === entry.localeId) {
+           console.log(`[Delete] Found same-locale fallback via '${cmd}': ID ${targetId}`);
+           nextSelectedId = targetId;
+           break;
+         }
+      }
+    }
+    
+    // Second pass: if isolated within Locale, allow cross-Locale link jump
+    if (nextSelectedId === null) {
+      for (const cmd of adjacentCmds) {
+        const targetId = entry.links[cmd] !== undefined ? entry.links[cmd] : entry.autoLinks[cmd];
+        if (targetId !== undefined) {
+           console.log(`[Delete] Found cross-locale fallback via '${cmd}': ID ${targetId}`);
+           nextSelectedId = targetId;
+           break;
+        }
+      }
+    }
+  }
+
+  if (nextSelectedId === null) console.log("[Delete] No geometric fallback found.");
+  let newSelectIdx = -1;
+  if (nextSelectedId !== null) {
+    newSelectIdx = tourMap.entries.findIndex(e => e.type === 'link' && e.id === nextSelectedId);
+  }
+
+  // Fallback to array proximity if geometry isolated
+  if (newSelectIdx < 0) {
+    if (selectedIndex >= tourMap.entries.length) {
+      selectedIndex = tourMap.entries.length - 1;
+    }
+    // Search backward for the nearest surviving link
+    for (let i = selectedIndex; i >= 0; i--) {
+       if (tourMap.entries[i].type === 'link') {
+         newSelectIdx = i;
+         break;
+       }
+    }
+  }
+
+  lineList.render();
+  if (newSelectIdx >= 0) {
+    lineList.select(newSelectIdx);
+  } else {
+    onLineSelected(selectedIndex >= 0 ? selectedIndex : -1);
+  }
+  runValidation();
+});
+
+// ---- Callbacks ----
+
+function onLineSelected(index) {
+  selectedIndex = index;
+  const entry = index >= 0 ? tourMap.entries[index] : null;
+
+  if (entry) {
+    btnToggleMode.disabled = false;
+    if (entry.type === 'locale' && currentMode !== 'locale') {
+      setMode('locale');
+      btnDeleteLine.disabled = index < 0;
+      return;
+    } else if (entry.type === 'link' && currentMode !== 'view') {
+      setMode('view');
+      btnDeleteLine.disabled = index < 0;
+      return;
+    } else {
+      if (currentMode === 'view') {
+        const isUnassignedLink = entry.type === 'link' && entry.localeId === null;
+        if (isUnassignedLink) {
+          btnToggleMode.innerHTML = '<span class="btn-icon">➕</span> Create Locale from Views';
+          btnToggleMode.dataset.state = 'add';
+        } else {
+          btnToggleMode.innerHTML = '<span class="btn-icon">🧭</span> Locale Mode';
+          btnToggleMode.dataset.state = 'locale';
+        }
+      } else {
+        btnToggleMode.innerHTML = '<span class="btn-icon">📷</span> View Mode';
+        btnToggleMode.dataset.state = 'view';
+      }
+    }
+  } else {
+    btnToggleMode.disabled = true;
+  }
+
+  refreshCurrentSelection();
+  btnDeleteLine.disabled = index < 0;
+}
+
+function onNavigateToPhoto(photoId, fromCommand) {
+  const currentPhotoId = (selectedIndex >= 0 && tourMap.entries[selectedIndex].type === 'link') 
+      ? tourMap.entries[selectedIndex].id 
+      : null;
+
+  // Find the entry index with this ID
+  let idx = tourMap.entries.findIndex(e => e.type === 'link' && e.id === photoId);
+  
+  if (idx < 0) {
+    // Auto-create missing photo to allow navigation (e.g. manually typed links or legacy mappings)
+    const newEntry = new MapEntry();
+    newEntry.type = 'link';
+    newEntry.id = photoId;
+    tourMap.addEntry(newEntry);
+    idx = tourMap.entries.length - 1;
+    markDirty();
+  }
+
+  // --- Auto-Stitch Missing Reverse Link & Heading on Navigation ---
+  if (fromCommand && currentPhotoId !== null && idx >= 0) {
+    const targetEntry = tourMap.entries[idx];
+    const revCmd = OPPOSITE_CMDS[fromCommand];
+    const currentEntry = tourMap.entries[selectedIndex];
+    
+    let changed = false;
+    
+    // Only auto-stitch if it's an explicit manual link, not an autoLink
+    if (revCmd && currentEntry && currentEntry.links[fromCommand] === photoId) {
+      if (!targetEntry.links[revCmd]) {
+        targetEntry.links[revCmd] = currentPhotoId;
+        changed = true;
+      }
+    }
+    
+    if (inferHeading(currentEntry, targetEntry, fromCommand)) {
+      changed = true;
+    }
+    
+    if (changed) markDirty();
+  }
+  
+  computeAutoLinks(tourMap);
+
+  if (idx >= 0) {
+    if (currentMode === 'locale') {
+      setMode('view');
+    }
+    lineList.select(idx);
+  }
+  runValidation();
+}
+
+function onLinkChanged(command, targetId, imageName) {
+  if (selectedIndex < 0) return;
+  const entry = tourMap.entries[selectedIndex];
+  if (!entry || entry.type !== 'link') return;
+
+  // Prevent self-linking
+  if (targetId && targetId === entry.id) {
+    showToast("Cannot link a photo to itself.");
+    return;
+  }
+
+  if (targetId === null) {
+    delete entry.links[command];
+  } else {
+    // If command is 'o' or 'c', use the door linking helper
+    if (command === 'o' || command === 'c') {
+      linkAsDoor(entry.id, targetId, imageName, command === 'c');
+      return;
+    }
+
+    // Auto-create locally unlinked photo if missing
+    let targetIdx = tourMap.entries.findIndex(e => e.type === 'link' && e.id === targetId);
+    if (targetIdx < 0) {
+      const newEntry = new MapEntry();
+      newEntry.type = 'link';
+      newEntry.id = targetId;
+      assignCustomImageIfNeeded(newEntry, imageName);
+      tourMap.addEntry(newEntry);
+      targetIdx = tourMap.entries.length - 1;
+    }
+    
+    tourMap.updateLinkWithSync(entry.id, command, targetId);
+
+    // --- Bidirectional Auto-Linkage ---
+    const targetEntry = tourMap.entries[targetIdx];
+    let inferred = inferHeading(entry, targetEntry, command);
+    
+    // 1. Simple Reverse Link
+    const revCmd = OPPOSITE_CMDS[command];
+    if (revCmd && !targetEntry.links[revCmd]) {
+      // Enforcement rule: Do not auto-assign a 'b' (back) link to a room entry if it came through a door ('f' from an Open door)
+      // Because we want the user to turn around and open it manually.
+      // Also, if the command was 'f', revCmd is 'b'.
+      let allowReverse = true;
+      if (revCmd === 'b' && command === 'f') {
+         const sourceGroup = tourMap.getSyncGroupForNode(entry.id);
+         if (sourceGroup && sourceGroup.isOpen) {
+            allowReverse = false; // Block 'b' auto-assignment
+         }
+      }
+      
+      if (allowReverse) {
+        tourMap.updateLinkWithSync(targetEntry.id, revCmd, entry.id);
+      }
+    }
+
+    // 2. Inter-Locale Stitching for 'f' (Forward)
+    if (command === 'f' && entry.localeId !== null && targetEntry.localeId !== null && entry.localeId !== targetEntry.localeId) {
+      if (targetEntry.heading) {
+        const oppHeading = OPPOSITE_HEADINGS[targetEntry.heading.toUpperCase()];
+        if (oppHeading) {
+          const localeC = targetEntry.localeId;
+          const localeD = entry.localeId;
+          const groups = tourMap.getLocaleGroups();
+          const groupC = groups.find(g => g.localeId === localeC);
+          const groupD = groups.find(g => g.localeId === localeD);
+          
+          if (groupC && groupD) {
+            const photoC_Opp = groupC.entries.find(e => e.heading && e.heading.toUpperCase() === oppHeading);
+            const photoD_Opp = groupD.entries.find(e => e.heading && e.heading.toUpperCase() === oppHeading);
+
+            if (photoC_Opp && photoD_Opp) {
+              if (!photoC_Opp.links['f']) photoC_Opp.links['f'] = photoD_Opp.id;
+            } else {
+              const missingInC = !photoC_Opp ? `Locale #${localeC}` : '';
+              const missingInD = !photoD_Opp ? `Locale #${localeD}` : '';
+              const both = (missingInC && missingInD) ? `${missingInC} and ${missingInD}` : (missingInC || missingInD);
+              showToast(`Incomplete inter-locale stitch: Missing ${oppHeading}-facing photo in ${both}.`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (entry) entry.markModified();
+  markDirty();
+  navGrid.update(entry);
+  rawLineEditor.update(selectedIndex);
+  runValidation();
+}
+
+/**
+ * Links two photos as a door (Open/Closed).
+ * @param {string} idA - Current photo ID
+ * @param {string} idB - Target photo ID
+ * @param {string} imageNameB - Optional image name for target
+ * @param {boolean} currentIsB - If true, idA is the 'Open' state and idB is the 'Closed' state (reverse drop)
+ */
+function linkAsDoor(idA, idB, imageNameB = null, currentIsB = false) {
+  if (idA === idB) return; // Prevent self-linking
+
+  const entryA = tourMap.findById(idA);
+  let entryB = tourMap.findById(idB);
+
+  // If entryA has no locale, try to discover it:
+  // 1. Check linked neighbors first
+  // 2. Fall back to scanning backward in the entries array for the nearest locale header
+  if (entryA && (entryA.localeId === null || entryA.localeId === -1)) {
+    let foundLocale = false;
+    
+    // Pass 1: check linked neighbors
+    for (const cmd of ['l', 'r', 'f', 'b', 'u', 'd']) {
+      const neighborId = entryA.links[cmd] || (entryA.autoLinks && entryA.autoLinks[cmd]);
+      if (neighborId) {
+        const neighbor = tourMap.findById(neighborId);
+        if (neighbor && neighbor.localeId !== null && neighbor.localeId !== -1) {
+          entryA.localeId = neighbor.localeId;
+          entryA.localeDescription = neighbor.localeDescription;
+          entryA.markModified();
+          foundLocale = true;
+          break;
+        }
+      }
+    }
+    
+    // Pass 2: scan backward for the nearest locale header
+    if (!foundLocale) {
+      const idxA = tourMap.entries.indexOf(entryA);
+      for (let i = idxA - 1; i >= 0; i--) {
+        const prev = tourMap.entries[i];
+        if (prev.type === 'locale' && prev.localeId !== null) {
+          entryA.localeId = prev.localeId;
+          entryA.localeDescription = prev.localeText || prev.localeDescription;
+          entryA.markModified();
+          foundLocale = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!entryB && idB) {
+    entryB = new MapEntry();
+    entryB.type = 'link';
+    entryB.id = idB;
+    assignCustomImageIfNeeded(entryB, imageNameB);
+    
+    // Inherit heading from entryA if missing
+    if (entryA && entryA.heading && !entryB.heading) {
+      entryB.heading = entryA.heading;
+    }
+    
+    // Inherit locale and insert at the right position
+    if (entryA && entryA.localeId !== null && entryA.localeId !== -1) {
+      entryB.localeId = entryA.localeId;
+      entryB.localeDescription = entryA.localeDescription;
+      const idxA = tourMap.entries.indexOf(entryA);
+      tourMap.addEntry(entryB, idxA + 1);
+    } else {
+      tourMap.addEntry(entryB);
+    }
+  } else if (entryA && entryB && entryA.heading && !entryB.heading) {
+    entryB.heading = entryA.heading;
+  }
+
+  if (!entryA || !entryB) return;
+
+  // Clear existing O/C links between these two to avoid conflicting states
+  delete entryA.links['o'];
+  delete entryA.links['c'];
+  delete entryB.links['o'];
+  delete entryB.links['c'];
+
+  if (currentIsB) {
+    entryA.links['c'] = idB;
+    entryB.links['o'] = idA;
+  } else {
+    entryA.links['o'] = idB;
+    entryB.links['c'] = idA;
+  }
+
+  // Copy directional links from entryA to entryB so the door variant
+  // shows the same neighbors in the nav grid
+  for (const cmd of ['l', 'r', 'f', 'b', 'a', 'u', 'd']) {
+    if (entryA.links[cmd] && !entryB.links[cmd]) {
+      // If we are copying to the CLOSED variant, never copy 'f'
+      if (cmd === 'f') {
+         if (currentIsB) {
+            // entryB is OPEN, entryA is CLOSED. We shouldn't copy 'f' from closed to open because closed shouldn't have it.
+            // But if it does, we can copy it.
+         } else {
+            // entryB is CLOSED. Do NOT copy 'f' to it.
+            continue;
+         }
+      }
+      entryB.links[cmd] = entryA.links[cmd];
+    }
+  }
+
+  // Ensure closed doors never keep an 'f' link
+  const closedEntry = currentIsB ? entryA : entryB;
+  if (closedEntry.links['f']) {
+     delete closedEntry.links['f'];
+  }
+
+  // Inherit locale for existing entryB
+  if (entryA.localeId !== null && entryA.localeId !== -1 && entryB.localeId !== entryA.localeId) {
+    entryB.localeId = entryA.localeId;
+    entryB.localeDescription = entryA.localeDescription;
+    
+    const idxA = tourMap.entries.indexOf(entryA);
+    const idxB = tourMap.entries.indexOf(entryB);
+    if (idxA >= 0 && idxB >= 0 && Math.abs(idxA - idxB) > 1) {
+      let targetIdx = idxA + 1;
+      if (idxB < targetIdx) targetIdx--;
+      tourMap.moveEntry(idxB, targetIdx);
+    }
+  }
+
+  entryA.markModified();
+  entryB.markModified();
+  markDirty();
+  computeAutoLinks(tourMap);
+  lineList.render();
+  refreshCurrentSelection();
+  rawLineEditor.update(selectedIndex);
+  runValidation();
+}
+
+function onEntryPropertyChanged() {
+  const entry = selectedIndex >= 0 ? tourMap.entries[selectedIndex] : null;
+  if (entry) entry.markModified();
+  markDirty();
+  computeAutoLinks(tourMap);
+  refreshCurrentSelection();
+  lineList.render();
+  runValidation();
+}
+
+function onHeadingAssigned(photoId, heading, imageName) {
+  let idx = tourMap.entries.findIndex(e => e.type === 'link' && e.id === photoId);
+  const currentLocaleEntry = tourMap.entries[selectedIndex];
+  let targetLocaleId = null;
+
+  if (currentLocaleEntry) {
+    targetLocaleId = currentLocaleEntry.type === 'locale' 
+        ? currentLocaleEntry.localeId 
+        : currentLocaleEntry.localeId;
+  }
+
+  // If we still don't have a locale, scan backward for the nearest locale header
+  if (targetLocaleId === null || targetLocaleId === -1) {
+    for (let i = selectedIndex - 1; i >= 0; i--) {
+      const prev = tourMap.entries[i];
+      if (prev.type === 'locale' && prev.localeId !== null) {
+        targetLocaleId = prev.localeId;
+        break;
+      }
+    }
+  }
+
+  if (idx < 0) {
+    const newEntry = new MapEntry();
+    newEntry.type = 'link';
+    newEntry.id = photoId;
+    assignCustomImageIfNeeded(newEntry, imageName);
+    tourMap.addEntry(newEntry);
+    idx = tourMap.entries.length - 1;
+  }
+
+  const entry = tourMap.entries[idx];
+  entry.heading = heading;
+
+  if (targetLocaleId !== null && targetLocaleId !== -1) {
+    if (entry.localeId !== targetLocaleId) {
+       entry.localeId = targetLocaleId;
+       
+       // Inherit the description mathematically from the overarching Group so UI displays it
+       const targetGroup = tourMap.getLocaleGroups().find(g => g.localeId === targetLocaleId);
+       if (targetGroup) {
+         entry.localeDescription = targetGroup.description;
+       }
+       
+       const oldIdx = idx;
+       let targetInsert = selectedIndex + 1;
+       
+       if (oldIdx !== selectedIndex && oldIdx !== selectedIndex + 1) {
+         if (oldIdx < targetInsert) targetInsert--;
+         tourMap.moveEntry(oldIdx, targetInsert);
+         if (oldIdx < selectedIndex) selectedIndex--;
+         idx = targetInsert;
+       }
+    }
+  }
+
+  markDirty();
+  if (entry) entry.markModified();
+  computeAutoLinks(tourMap);
+  
+  if (idx >= 0) {
+    selectedIndex = idx;
+  }
+  
+  refreshCurrentSelection();
+  lineList.render();
+  runValidation();
+}
+
+function onRawLineEdited() {
+  markDirty();
+  computeAutoLinks(tourMap);
+  refreshCurrentSelection();
+  lineList.render();
+}
+
+function onTextViewChanged() {
+  markDirty();
+  lineList.render();
+  if (selectedIndex >= 0 && selectedIndex < tourMap.entries.length) {
+    onLineSelected(selectedIndex);
+  } else {
+    onLineSelected(-1);
+  }
+  imageBrowser.render();
+}
+
+function onPrimaryDrop(photoId, imageName) {
+  const currentEntry = selectedIndex >= 0 ? tourMap.entries[selectedIndex] : null;
+  
+  if (!currentEntry || currentEntry.type !== 'link') {
+    // No link entry selected — create a new link entry directly
+    const entry = new MapEntry();
+    entry.type = 'link';
+    entry.id = photoId || suggestNextId();
+    assignCustomImageIfNeeded(entry, imageName);
+    // Insert after current selection, or at end
+    const insertAt = selectedIndex >= 0 ? selectedIndex + 1 : tourMap.entries.length;
+    tourMap.addEntry(entry, insertAt);
+    markDirty();
+    lineList.render();
+    lineList.select(insertAt);
+    imageBrowser.refreshUsedStatus();
+    runValidation();
+    return;
+  }
+
+  if (photoId !== null && photoId !== '') {
+    currentEntry.id = photoId;
+  }
+  
+  assignCustomImageIfNeeded(currentEntry, imageName);
+  
+  markDirty();
+  refreshCurrentSelection();
+  lineList.render();
+  imageBrowser.refreshUsedStatus();
+}
+
+/**
+ * Cycles through standard headings (N, NE, E, SE, S, SW, W, NW) for a given photo.
+ */
+function onCycleHeading(photoId, currentHeading) {
+  const entry = tourMap.findById(photoId);
+  if (!entry) return;
+
+  const headings = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  let currentIdx = headings.indexOf(currentHeading?.toUpperCase());
+  if (currentIdx < 0) currentIdx = -1;
+
+  const nextIdx = (currentIdx + 1) % headings.length;
+  entry.heading = headings[nextIdx];
+
+  markDirty();
+  refreshCurrentSelection();
+  lineList.render();
+  runValidation();
+}
+
+/**
+ * Generates a helpful default ID for a new line.
+ * If a prefix is set, it looks for the first image that isn't already used in the map.
+ */
+function suggestNextId() {
+  const usedIds = new Set(tourMap.getLinkEntries().map(e => String(e.id)));
+  
+  // Try to find the first image ID that isn't used
+  for (const name of imageBrowser.displayedNames) {
+    const id = imageBrowser.extractIdFromFilename(name);
+    if (id !== null && !usedIds.has(String(id))) {
+      return id;
+    }
+  }
+
+  // Fallback to simple increment
+  const numIds = tourMap.getLinkEntries()
+    .map(e => parseInt(e.id, 10))
+    .filter(n => !isNaN(n));
+  let nextNum = numIds.length > 0 ? Math.max(...numIds) + 1 : 1;
+  
+  let result = String(nextNum);
+  if (tourMap.idPadding > 0) {
+    result = result.padStart(tourMap.idPadding, '0');
+  }
+  return result;
+}
+
+// Update btnAddLine to use suggestNextId
+btnAddLine.onclick = null; // Remove old listener if any (it was added via addEventListener though)
+// Actually, let's just replace the listener logic in the next chunk.
+
+// ---- Helpers ----
+
+function loadMapFile(text) {
+  let content = text;
+  
+  // Unconditionally try to strip the JS wrapper, if present
+  const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  if (lines.length >= 3) {
+    if (lines[0].includes('Tour links definition') && lines[1].includes('var embeddedData')) {
+      content = lines.slice(2, -1).join('\n');
+    }
+  }
+  const result = content.trim() === '' 
+    ? { title: '', filenamePrefix: '', entries: [] }
+    : parseMapFile(content);
+  tourMap.replaceAll(result);
+  fileHandle = fileHandle || null;
+
+  computeAutoLinks(tourMap);
+
+  lineList.render();
+  imageBrowser.render();
+
+  // Select first link entry, or first entry
+  const firstLink = tourMap.entries.findIndex(e => e.type === 'link');
+  if (firstLink >= 0) {
+    lineList.select(firstLink);
+  } else if (tourMap.entries.length > 0) {
+    lineList.select(0);
+  }
+
+  // Enable buttons
+  btnSave.disabled = false;
+  btnSaveAs.disabled = false;
+  btnAddLine.disabled = false;
+  btnAddLocale.disabled = false;
+
+  markClean();
+  document.title = tourMap.title ? `TourMap Editor — ${tourMap.title}` : 'TourMap Editor';
+  
+  // Auto-pop the checkout report if there are sequence mismatches
+  const issues = window.lastValidationResults || [];
+  const hasMismatch = issues.some(i => i.actionData && i.actionData.type === 'sequence_mismatch');
+  if (hasMismatch) {
+    showCheckoutReport();
+  }
+}
+
+function refreshCurrentSelection() {
+  const index = selectedIndex;
+  const entry = index >= 0 ? tourMap.entries[index] : null;
+
+  if (currentMode === 'locale') {
+    let localeGroup = null;
+    let headerIdx = index;
+    if (entry) {
+      if (entry.type === 'locale') {
+        localeGroup = tourMap.getLocaleGroups().find(g => g.localeId === entry.localeId) || null;
+      } else if (entry.type === 'link') {
+        localeGroup = tourMap.getLocaleForEntry(entry);
+        if (localeGroup) {
+          headerIdx = tourMap.entries.findIndex(e => e.type === 'locale' && e.localeId === localeGroup.localeId);
+        }
+      }
+    }
+    localeEditor.update(localeGroup, entry && entry.type === 'link' ? entry.id : null);
+    propertiesPanel.update(index);
+    rawLineEditor.update(headerIdx >= 0 ? headerIdx : index);
+  } else {
+    navGrid.update(entry);
+    propertiesPanel.update(index);
+    rawLineEditor.update(index);
+  }
+  
+  imageBrowser.refreshUsedStatus();
+  runValidation();
+}
+
+/**
+ * Audit the map and update the "Issues" button badge.
+ */
+function runValidation() {
+  if (!tourMap) return;
+  const issues = MapValidator.validate(tourMap, imageBrowser.imageMap);
+  const count = issues.length;
+  
+  if (count > 0) {
+    issueCountEl.innerText = count;
+    btnCheckout.classList.remove('hidden');
+  } else {
+    btnCheckout.classList.add('hidden');
+  }
+  
+  window.lastValidationResults = issues; // Storage for the report modal
+}
+
+/**
+ * Render and show the checkout modal.
+ */
+function showCheckoutReport() {
+  const issues = window.lastValidationResults || [];
+  checkoutResults.innerHTML = '';
+
+  const checkoutTitle = document.getElementById('checkout-title');
+  if (checkoutTitle) {
+      if (issues.length > 0) checkoutTitle.innerHTML = 'Map Checkout Report <span style="font-size:12px; font-weight:normal; color:var(--text-tertiary); margin-left: 8px;">(Click a row to resolve the issue)</span>';
+      else checkoutTitle.innerHTML = 'Map Checkout Report';
+  }
+  
+  if (issues.length === 0) {
+    checkoutResults.innerHTML = '<div class="empty-state">No issues found in the current map.</div>';
+  } else {
+    const list = document.createElement('div');
+    list.className = 'validation-list';
+    
+    issues.forEach(issue => {
+      const item = document.createElement('div');
+      item.className = 'validation-item';
+      item.innerHTML = `
+        <span class="issue-type-badge issue-type-${issue.type}">${issue.type}</span>
+        <div class="issue-content">
+          <div class="issue-title">${issue.category}</div>
+          <div class="issue-msg">${issue.message}${issue.actionData && issue.actionData.type === 'sequence_mismatch' ? ' <span class="info-icon" style="cursor: pointer; opacity: 0.8;" title="Fix Problem Details">🔧</span>' : ''}</div>
+          <div class="issue-meta" style="font-size: 14px; font-weight: 600; margin-top: 6px; color: var(--text-primary);">Line: ${issue.lineIndex + 3}${issue.id ? ` <span style="font-weight:normal; color: var(--text-secondary);">| Photo ID: #${issue.id}</span>` : ''}</div>
+        </div>
+      `;
+
+      // Handle the main click event
+      item.onclick = (e) => {
+        // Prevent firing if the user clicked one of our action buttons
+        if (e.target.tagName === 'BUTTON') return;
+        
+        if (issue.actionData && issue.actionData.type === 'sequence_mismatch') {
+           showIssueDetails(issue);
+           return;
+        }
+        
+        onLineSelected(issue.lineIndex);
+        lineList.scrollToIndex(issue.lineIndex);
+        checkoutModal.classList.add('hidden');
+        // Ensure the raw line is visible to show the offending tokens
+        if (rawLineEditor.el) {
+          rawLineEditor.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          rawLineEditor.el.focus();
+        }
+      };
+      
+      // Wire up action buttons if present
+      setTimeout(() => {
+         const infoIcon = item.querySelector('.info-icon');
+         if (infoIcon) {
+            infoIcon.onclick = (e) => {
+               e.stopPropagation();
+               showIssueDetails(issue);
+            };
+         }
+      }, 0);
+      
+      list.appendChild(item);
+    });
+    checkoutResults.appendChild(list);
+  }
+  
+  checkoutModal.classList.remove('hidden');
+}
+
+/**
+ * Show detailed mismatch matrix for sequence syncing issues
+ */
+function showIssueDetails(issue, userResolvedConflicts = {}) {
+  const detailsModal = document.getElementById('issue-details-modal');
+  const detailsResults = document.getElementById('issue-details-results');
+  if (!detailsModal || !detailsResults) return;
+
+  if (!issue.actionData || issue.actionData.type !== 'sequence_mismatch') return;
+  const subtype = issue.actionData.subtype;
+  const allIds = [issue.id, ...issue.actionData.groupId].sort();
+  
+  let label = "Sequence";
+  if (subtype === 'np') label = "Next/Previous";
+  if (subtype === 'ej') label = "Earlier/Later";
+  if (subtype === 'qw') label = "Shift (Left/Right)";
+
+  let directionalCmds = ['l', 'r', 'f', 'b', 'u', 'd', 'a'];
+  if (subtype === 'qw') {
+     directionalCmds = ['b'];
+  }
+  
+  // Standard display order for ALL links
+  const allCmds = ['l', 'r', 'f', 'b', 'u', 'd', 'a', 'n', 'p', 'q', 'w', 'e', 'j', 'o', 'c', 'z'];
+
+  const linkVariants = {};
+  directionalCmds.forEach(cmd => linkVariants[cmd] = new Set());
+
+  // Track all variants for each synchronized command to detect conflicts
+  allIds.forEach(id => {
+    const e = tourMap.findById(id);
+    if (e) {
+      directionalCmds.forEach(cmd => {
+        if (e.links[cmd]) {
+          // Skip self-links for 'b' when tracking variants, since they aren't part of the shared sequence data
+          if (cmd === 'b' && e.links[cmd] === e.id) return;
+          linkVariants[cmd].add(e.links[cmd]);
+        }
+      });
+    }
+  });
+
+  // Determine if there are actual conflicts and incorporate user resolved state
+  let hasConflicts = false;
+  const unifiedLinks = {}; 
+  directionalCmds.forEach(cmd => {
+    if (userResolvedConflicts[cmd] !== undefined) {
+       unifiedLinks[cmd] = userResolvedConflicts[cmd];
+    } else if (linkVariants[cmd].size > 1) {
+      hasConflicts = true;
+    } else if (linkVariants[cmd].size === 1) {
+      unifiedLinks[cmd] = Array.from(linkVariants[cmd])[0];
+    }
+  });
+
+  let html = '';
+  if (hasConflicts) {
+     html += `<p style="margin-bottom: 12px; color: var(--warning);">Conflicts detected! The displayed group is a ${label} linked set that is not in sync. Multiple views have different destinations for the same direction. <strong>Please click a red conflicting link below</strong> to resolve the conflict for the sequence.</p>`;
+  } else {
+     html += `<p style="margin-bottom: 12px; color: var(--text-secondary);">The displayed group is a ${label} linked set that is not in sync. The following table highlights the missing links in yellow. Off-axis links are shown in gray for context.</p>`;
+  }
+
+  html += `<table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 16px;">`;
+  html += `<thead><tr style="background: var(--bg-hover); border-bottom: 1px solid var(--border);"><th style="padding: 8px; text-align: left;">Photo ID</th><th style="padding: 8px; text-align: left;">Links</th></tr></thead>`;
+  html += `<tbody>`;
+
+  allIds.forEach(id => {
+    const e = tourMap.findById(id);
+    if (!e) return;
+    
+    const entryIndex = tourMap.entries.indexOf(e);
+    const lineLabel = entryIndex >= 0 ? `Line ${entryIndex + 3}` : 'Unknown';
+
+    let linksDisplay = [];
+    
+    allCmds.forEach(cmd => {
+      const myLink = e.links[cmd];
+      
+      // If it's part of the sync check for this sequence:
+      if (directionalCmds.includes(cmd)) {
+         const isConflict = linkVariants[cmd].size > 1 && userResolvedConflicts[cmd] === undefined;
+
+         if (isConflict) {
+           if (myLink) {
+              if (cmd === 'b' && myLink === e.id) return; // skip b self-links
+              // Clickable conflict badge
+              linksDisplay.push(`<button class="btn-conflict-resolve" data-cmd="${cmd}" data-target="${myLink}" style="background: var(--danger); color: white; border: none; border-radius: 4px; padding: 2px 6px; cursor: pointer; font-family: var(--font-mono); font-size: 11px; margin-right: 8px;" title="Click to enforce ${cmd}=${myLink} across sequence">[ ${cmd}=${myLink} ]</button>`);
+           }
+         } else {
+           const expectedLink = unifiedLinks[cmd];
+           if (expectedLink) {
+             if (cmd === 'b' && expectedLink === e.id) {
+               // expected is a self link, do nothing for expectation rendering
+             } else if (myLink === expectedLink) {
+                linksDisplay.push(`<span style="color: var(--text-primary); margin-right: 8px; font-weight: bold;">${cmd}=${myLink}</span>`);
+             } else if (!myLink) {
+                linksDisplay.push(`<span style="color: var(--warning); margin-right: 8px; font-weight: bold;" title="Proposed missing link">+${cmd}=${expectedLink}</span>`);
+             } else if (myLink !== expectedLink) {
+                linksDisplay.push(`<span style="text-decoration: line-through; color: var(--text-tertiary); margin-right: 4px;">${cmd}=${myLink}</span><span style="color: var(--warning); margin-right: 8px; font-weight: bold;" title="Proposed overwrite change">&rarr; ${expectedLink}</span>`);
+             }
+           } else if (myLink) {
+              linksDisplay.push(`<span style="color: var(--text-primary); margin-right: 8px; font-weight: bold;">${cmd}=${myLink}</span>`);
+           }
+         }
+      } else {
+         // It's out of scope for this sequence type. Render it in gray if it exists.
+         if (myLink) {
+            linksDisplay.push(`<span style="color: var(--text-tertiary); margin-right: 8px;">${cmd}=${myLink}</span>`);
+         }
+      }
+    });
+
+    if (linksDisplay.length === 0) linksDisplay.push(`<span style="color: var(--text-tertiary); font-style: italic;">No links defined</span>`);
+
+    html += `<tr style="border-bottom: 1px dashed var(--border);">`;
+    html += `<td style="padding: 8px; font-weight: bold;">#${e.id} <span style="font-weight:normal; font-size:10px; color:var(--text-tertiary);">(${lineLabel})</span></td>`;
+    html += `<td style="padding: 8px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center;">${linksDisplay.join('')}</td>`;
+    html += `</tr>`;
+  });
+
+  html += `</tbody></table>`;
+  
+  detailsResults.innerHTML = html;
+
+  // Bind Resolution drafting
+  const resolveBtns = detailsResults.querySelectorAll('.btn-conflict-resolve');
+  resolveBtns.forEach(btn => {
+     btn.addEventListener('click', () => {
+        const targetCmd = btn.dataset.cmd;
+        const targetId = btn.dataset.target;
+        const newConflicts = { ...userResolvedConflicts, [targetCmd]: targetId };
+        showIssueDetails(issue, newConflicts);
+     });
+  });
+  
+  // Bind Footer Buttons
+  const btnFix = document.getElementById('btn-fix-issue-details');
+  const btnLoose = document.getElementById('btn-loose-issue-details');
+  
+  if (btnFix) {
+      btnFix.onclick = () => {
+         // Check if any conflicts are still unresolved
+         const unres = directionalCmds.find(cmd => linkVariants[cmd] && linkVariants[cmd].size > 1 && userResolvedConflicts[cmd] === undefined);
+         if (unres) {
+            alert("Please resolve the red conflicting links before applying fixes.");
+            return;
+         }
+
+         allIds.forEach(id => {
+            const e = tourMap.findById(id);
+            if (e) {
+               directionalCmds.forEach(cmd => {
+                  if (unifiedLinks[cmd]) {
+                     if (cmd === 'b' && unifiedLinks[cmd] === e.id) return;
+                     e.links[cmd] = unifiedLinks[cmd];
+                  }
+               });
+               e.markModified();
+            }
+         });
+         runValidation();
+         showCheckoutReport();
+         refreshCurrentSelection();
+         detailsModal.classList.add('hidden');
+      };
+  }
+  
+  if (btnLoose) {
+      btnLoose.onclick = () => {
+         allIds.forEach(id => {
+            const e = tourMap.findById(id);
+            if (e && !e.unsupportedTokens.includes('*loose')) {
+               e.unsupportedTokens.push('*loose');
+               e.markModified();
+            }
+         });
+         runValidation();
+         showCheckoutReport();
+         refreshCurrentSelection();
+         detailsModal.classList.add('hidden');
+      };
+  }
+
+  detailsModal.classList.remove('hidden');
+}
+
+function markDirty() {
+  isDirty = true;
+  const title = tourMap.title ? `TourMap Editor — ${tourMap.title}` : 'TourMap Editor';
+  document.title = '● ' + title;
+}
+
+function markClean() {
+  isDirty = false;
+  const title = tourMap.title ? `TourMap Editor — ${tourMap.title}` : 'TourMap Editor';
+  document.title = title;
+}
+
+function downloadFile(text, filename) {
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+  markClean();
+}
+
+function initResizers() {
+  const setup = (handleId, sidebarId, side) => {
+    const resizer = document.getElementById(handleId);
+    const sidebar = document.getElementById(sidebarId);
+    if (!resizer || !sidebar) return;
+
+    let isDragging = false;
+
+    resizer.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      resizer.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      
+      const mouseX = e.clientX;
+      
+      // Use requestAnimationFrame for smooth, performant resizing
+      requestAnimationFrame(() => {
+        if (!isDragging) return;
+
+        let newWidth;
+        if (side === 'left') {
+          newWidth = mouseX - sidebar.getBoundingClientRect().left;
+        } else {
+          newWidth = window.innerWidth - mouseX;
+        }
+
+        if (newWidth > 160 && newWidth < (window.innerWidth * 0.45)) {
+          // Update the DOM element directly for immediate, non-thrashing performance
+          sidebar.style.width = `${newWidth}px`;
+        }
+      });
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+        resizer.classList.remove('dragging');
+        document.body.style.cursor = 'default';
+        document.body.style.userSelect = '';
+        
+        // Only update the global CSS variables on mouseup to persist the state 
+        // without causing heavy layout re-calculations on every mouse frame.
+        const newWidth = sidebar.offsetWidth;
+        const varName = side === 'left' ? '--sidebar-left-w' : '--sidebar-right-w';
+        document.documentElement.style.setProperty(varName, `${newWidth}px`);
+      }
+    });
+  };
+
+  setup('sidebar-resizer', 'line-list-panel', 'left');
+  setup('right-sidebar-resizer', 'image-browser-panel', 'right');
+}
+
+// ---- Unsaved changes guard ----
+window.addEventListener('beforeunload', (e) => {
+  if (isDirty) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
+// ---- Keyboard shortcuts ----
+document.addEventListener('keydown', (e) => {
+  // Ctrl+S to save
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    if (!btnSave.disabled) btnSave.click();
+  }
+  // Ctrl+O to open
+  if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+    e.preventDefault();
+    btnOpenMap.click();
+  }
+});
+
+// Initialize resizers
+initResizers();

@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TourMap Editor v1.1</title>
+  <link rel="stylesheet" href="css/styles.css?v=1.1">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- WELCOME SCREEN -->
+  <div id="welcome-screen" class="welcome-screen">
+    <div class="welcome-card">
+      <div class="welcome-icon">🗺️</div>
+      <h1>TourMap Editor v1.1</h1>
+      <p>Select your Tour Folder to begin mapping. You will be prompted by your browser to allow file access.</p>
+      <button id="btn-start-tour" class="welcome-btn">
+        <span class="btn-icon">📁</span> Open Tour Folder
+      </button>
+    </div>
+  </div>
+
+  <!-- TOOLBAR -->
+  <header id="toolbar" class="hidden">
+    <div class="toolbar-left">
+      <div class="app-title">
+        <span class="app-icon">🗺️</span>
+        <span>TourMap Editor v1.1</span>
+      </div>
+      <button id="btn-open-map" class="toolbar-btn" title="Open Tour Folder">
+        <span class="btn-icon">📁</span> Open Tour
+      </button>
+      <button id="btn-save" class="toolbar-btn" title="Save Map File" disabled>
+        <span class="btn-icon">💾</span> Save
+      </button>
+      <button id="btn-save-as" class="toolbar-btn" title="Save As..." disabled>
+        <span class="btn-icon">📄</span> Save As
+      </button>
+      <div class="toolbar-divider"></div>
+      <div class="toolbar-item" title="Filename Prefix (e.g. DCP_)">
+        <label for="input-prefix" class="toolbar-label">Prefix:</label>
+        <input type="text" id="input-prefix" class="toolbar-input" placeholder="DCP_" maxlength="10">
+      </div>
+      <div class="toolbar-item" title="ID Digits (e.g. 4 for 0710)">
+        <label for="input-digits" class="toolbar-label">Digits:</label>
+        <input type="number" id="input-digits" class="toolbar-input" style="width: 40px;" min="0" max="10" value="0">
+      </div>
+      <div class="toolbar-divider"></div>
+      <button id="btn-add-line" class="toolbar-btn" title="Add New Link Line" disabled>
+        <span class="btn-icon">➕</span> New Line
+      </button>
+      <button id="btn-add-locale" class="toolbar-btn" title="Add New Empty Locale" disabled>
+        <span class="btn-icon">🏛️</span> New Locale
+      </button>
+      <button id="btn-delete-line" class="toolbar-btn" title="Delete Selected Line" disabled>
+        <span class="btn-icon">🗑️</span> Delete
+      </button>
+      <div class="toolbar-divider"></div>
+      <button id="btn-checkout" class="toolbar-btn warning hidden" title="View Map Checkout Report">
+        <span class="btn-icon">⚠️</span> <span id="issue-count">0</span> Issues
+      </button>
+    </div>
+    <div class="toolbar-right">
+      <button id="btn-text-view" class="toolbar-btn" title="Toggle Full Text View">
+        <span class="btn-icon">📝</span> Text View
+      </button>
+      <div class="toolbar-divider"></div>
+      <button id="btn-toggle-mode" class="toolbar-btn" title="Toggle Locale Editor / View Editor" disabled>
+        <span class="btn-icon">🧭</span> Locale Mode
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN CONTENT -->
+  <main id="main-content" class="hidden">
+
+    <!-- LEFT SIDEBAR: Line List -->
+    <aside id="line-list-panel" class="panel">
+      <div class="panel-header">
+        <h3>Map Entries</h3>
+        <input type="text" id="line-search" class="search-input" placeholder="Filter...">
+      </div>
+      <div id="line-list" class="line-list-container">
+        <div class="empty-state">Open a map file to begin</div>
+      </div>
+    </aside>
+
+    <div id="sidebar-resizer" class="resizer-v"></div>
+
+    <!-- CENTER: Navigation Grid + Properties -->
+    <section id="center-panel">
+
+      <!-- Navigation Grid (View Editor Mode) -->
+      <div id="nav-grid-container" class="panel">
+        <div class="panel-header">
+          <h3 id="nav-grid-title">Navigation Grid</h3>
+          <span id="nav-grid-subtitle" class="subtitle"></span>
+        </div>
+        <div id="nav-grid" class="nav-grid">
+          <!-- Row 1: Up, Forward, Zoom -->
+          <div class="nav-cell" data-command="u" data-label="Up">
+            <div class="cell-label">Up</div>
+            <div class="cell-image"><div class="cell-placeholder">u</div></div>
+          </div>
+          <div class="nav-cell" data-command="f" data-label="Forward">
+            <div class="cell-label">Forward</div>
+            <div class="cell-image"><div class="cell-placeholder">f</div></div>
+          </div>
+          <div class="nav-cell" data-command="z" data-label="Zoom">
+            <div class="cell-label">Zoom</div>
+            <div class="cell-image"><div class="cell-placeholder">z</div></div>
+          </div>
+
+          <!-- Row 2: Left, Primary, Right -->
+          <div class="nav-cell" data-command="l" data-label="Left">
+            <div class="cell-label">Left</div>
+            <div class="cell-image"><div class="cell-placeholder">l</div></div>
+          </div>
+          <div class="nav-cell primary-cell" data-command="primary" data-label="Primary">
+            <div class="cell-label">Primary</div>
+            <div class="cell-image"><div class="cell-placeholder">●</div></div>
+          </div>
+          <div class="nav-cell" data-command="r" data-label="Right">
+            <div class="cell-label">Right</div>
+            <div class="cell-image"><div class="cell-placeholder">r</div></div>
+          </div>
+
+          <!-- Row 3: Down, Back, Turn Around -->
+          <div class="nav-cell" data-command="d" data-label="Down">
+            <div class="cell-label">Down</div>
+            <div class="cell-image"><div class="cell-placeholder">d</div></div>
+          </div>
+          <div class="nav-cell" data-command="b" data-label="Back">
+            <div class="cell-label">Back</div>
+            <div class="cell-image"><div class="cell-placeholder">b</div></div>
+          </div>
+          <div class="nav-cell" data-command="a" data-label="Turn Around">
+            <div class="cell-label">⟳ Turn</div>
+            <div class="cell-image"><div class="cell-placeholder">a</div></div>
+          </div>
+        </div>
+
+        <!-- Secondary Links (chips) -->
+        <div id="secondary-links" class="secondary-links">
+          <div class="chip-group">
+            <button class="link-chip" data-command="o" title="Open door"><span class="chip-icon">🚪</span> Open<span class="chip-target"></span></button>
+            <button class="link-chip" data-command="c" title="Close door"><span class="chip-icon">🔒</span> Close<span class="chip-target"></span></button>
+            <button class="link-chip" data-command="n" title="Next in sequence"><span class="chip-icon">⏭</span> Next<span class="chip-target"></span></button>
+            <button class="link-chip" data-command="p" title="Previous in sequence"><span class="chip-icon">⏮</span> Prev<span class="chip-target"></span></button>
+            <button class="link-chip" data-command="q" title="Shift right"><span class="chip-icon">⇨</span> Shift R<span class="chip-target"></span></button>
+            <button class="link-chip" data-command="w" title="Shift left"><span class="chip-icon">⇦</span> Shift L<span class="chip-target"></span></button>
+            <button class="link-chip" data-command="e" title="Earlier in time"><span class="chip-icon">⏪</span> Earlier<span class="chip-target"></span></button>
+            <button class="link-chip" data-command="j" title="Later in time"><span class="chip-icon">⏩</span> Later<span class="chip-target"></span></button>
+          </div>
+          <div id="custom-link-container" class="chip-group" style="margin-top: 8px;"></div>
+        </div>
+      </div>
+
+      <!-- Locale Editor (Compass Rose Mode) -->
+      <div id="locale-editor-container" class="panel hidden">
+        <div class="panel-header">
+          <h3 id="locale-editor-title">Locale Editor</h3>
+          <span class="subtitle">Drag images to headings</span>
+        </div>
+        <div id="locale-compass" class="locale-compass">
+          <!-- The 8 headings -->
+          <div class="compass-slot" data-heading="NW">
+            <div class="slot-label">NW</div>
+            <div class="slot-images"></div>
+          </div>
+          <div class="compass-slot" data-heading="N">
+            <div class="slot-label">N</div>
+            <div class="slot-images"></div>
+          </div>
+          <div class="compass-slot" data-heading="NE">
+            <div class="slot-label">NE</div>
+            <div class="slot-images"></div>
+          </div>
+          <div class="compass-slot" data-heading="W">
+            <div class="slot-label">W</div>
+            <div class="slot-images"></div>
+          </div>
+          <div class="compass-center">
+            <div id="locale-center-name" class="locale-center-name">Locale Name</div>
+            <div id="locale-center-id" class="locale-center-id">#1</div>
+          </div>
+          <div class="compass-slot" data-heading="E">
+            <div class="slot-label">E</div>
+            <div class="slot-images"></div>
+          </div>
+          <div class="compass-slot" data-heading="SW">
+            <div class="slot-label">SW</div>
+            <div class="slot-images"></div>
+          </div>
+          <div class="compass-slot" data-heading="S">
+            <div class="slot-label">S</div>
+            <div class="slot-images"></div>
+          </div>
+          <div class="compass-slot" data-heading="SE">
+            <div class="slot-label">SE</div>
+            <div class="slot-images"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Properties Panel -->
+      <div id="properties-panel" class="panel">
+        <div class="panel-header">
+          <h3>Properties</h3>
+          <span id="prop-sync-badge" class="sync-badge hidden" title="This view's directional links are synced with other views.">🔗 Synced POV</span>
+        </div>
+        <div class="properties-grid">
+          <div class="prop-group view-only-prop hidden" id="prop-strict-group" style="grid-column: 1 / -1; background: var(--bg-hover); padding: 4px 8px; border-radius: 4px;">
+            <label class="checkbox-label" style="margin:0;">
+              <input type="checkbox" id="prop-strict-sync" checked>
+              <strong>Strict POV Sequence</strong> (Sync directional links)
+            </label>
+          </div>
+          <div class="prop-group">
+            <label for="prop-locale">Locale</label>
+            <div class="prop-row">
+              <input type="number" id="prop-locale-id" class="prop-input small" placeholder="#" min="0">
+              <input type="text" id="prop-locale-text" class="prop-input" placeholder="Locale description">
+            </div>
+          </div>
+          <div class="prop-group view-only-prop">
+            <label for="prop-heading">Heading</label>
+            <select id="prop-heading" class="prop-input">
+              <option value="">(none)</option>
+              <option value="N">N</option>
+              <option value="NNE">NNE</option>
+              <option value="NE">NE</option>
+              <option value="ENE">ENE</option>
+              <option value="E">E</option>
+              <option value="ESE">ESE</option>
+              <option value="SE">SE</option>
+              <option value="SSE">SSE</option>
+              <option value="S">S</option>
+              <option value="SSW">SSW</option>
+              <option value="SW">SW</option>
+              <option value="WSW">WSW</option>
+              <option value="W">W</option>
+              <option value="WNW">WNW</option>
+              <option value="NW">NW</option>
+              <option value="NNW">NNW</option>
+            </select>
+          </div>
+          <div class="prop-group view-only-prop">
+            <label for="prop-description">View Description</label>
+            <input type="text" id="prop-description" class="prop-input" placeholder="Primary description (above image)">
+          </div>
+          <div class="prop-group view-only-prop">
+            <label for="prop-verbose">Details</label>
+            <input type="text" id="prop-verbose" class="prop-input" placeholder="Verbose description (below image)">
+          </div>
+          <div class="prop-group prop-row-inline view-only-prop">
+            <div class="prop-sub">
+              <label for="prop-custom-image">Custom Image</label>
+              <input type="text" id="prop-custom-image" class="prop-input" placeholder="e.g. history\photo">
+            </div>
+          </div>
+          <div class="prop-group prop-row-inline view-only-prop">
+            <div class="prop-sub">
+              <label for="prop-custom-label">Custom Link Label</label>
+              <input type="text" id="prop-custom-label" class="prop-input" placeholder="e.g. Inner Circuit">
+            </div>
+            <div class="prop-sub">
+              <label for="prop-custom-target">Target ID</label>
+              <input type="text" id="prop-custom-target" class="prop-input small" placeholder="#">
+            </div>
+          </div>
+          <div class="prop-group view-only-prop">
+            <label class="checkbox-label">
+              <input type="checkbox" id="prop-home">
+              Home (y)
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Raw Line Editor -->
+      <div id="raw-line-panel" class="panel">
+        <div class="panel-header"><h3>Raw Line</h3></div>
+        <input type="text" id="raw-line-editor" class="raw-line-input" placeholder="Select a line to view its raw text" spellcheck="false">
+      </div>
+    </section>
+
+    <div id="right-sidebar-resizer" class="resizer-v"></div>
+
+    <!-- RIGHT SIDEBAR: Image Browser -->
+    <aside id="image-browser-panel" class="panel">
+      <div class="panel-header">
+        <h3>Images</h3>
+        <input type="text" id="image-search" class="search-input" placeholder="Filter images...">
+      </div>
+      <div id="image-browser" class="image-browser-container">
+        <div class="empty-state">Open an image folder</div>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- FULL-SCREEN TEXT VIEW (hidden by default) -->
+  <div id="text-view-overlay" class="text-view-overlay hidden">
+    <div class="text-view-header">
+      <h3>📝 Full Map File — Text View</h3>
+      <button id="btn-close-text-view" class="toolbar-btn">✕ Close</button>
+    </div>
+    <textarea id="text-view-editor" class="text-view-textarea" spellcheck="false"></textarea>
+  </div>
+
+  <!-- Hidden file inputs for Firefox fallback -->
+  <input type="file" id="file-input-map" webkitdirectory directory multiple style="display:none">
+  <input type="file" id="file-input-images" webkitdirectory directory multiple style="display:none">
+
+  <!-- TOAST NOTIFICATION -->
+  <div id="toast-notification" class="toast hidden"></div>
+
+  <!-- CHECKOUT MODAL -->
+  <div id="checkout-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="checkout-title">⚠️ Map Checkout Report</h3>
+        <button id="btn-close-checkout" class="btn-close">✕</button>
+      </div>
+      <div id="checkout-results" class="modal-body">
+        <!-- Results will be injected here -->
+      </div>
+      <div class="modal-footer" style="display: flex; gap: 8px; align-items: center;">
+        <button id="btn-fix-all-omissions" class="btn btn-secondary">Fix All Omissions</button>
+        <div style="flex-grow: 1;"></div>
+        <button id="btn-done-checkout" class="btn btn-primary">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ISSUE DETAILS MODAL -->
+  <div id="issue-details-modal" class="modal-overlay hidden" style="z-index: 2000;">
+    <div class="modal" style="max-width: 600px;">
+      <div class="modal-header">
+        <h3>🔧 Fix Problem</h3>
+        <button id="btn-close-issue-details" class="btn-close">✕</button>
+      </div>
+      <div id="issue-details-results" class="modal-body">
+        <!-- Results will be injected here -->
+      </div>
+      <div class="modal-footer" style="display: flex; gap: 8px;">
+        <button id="btn-fix-issue-details" class="btn btn-primary">Fix Omissions (Sync All)</button>
+        <button id="btn-loose-issue-details" class="btn btn-secondary">Mark as Loose Sequence</button>
+        <div style="flex-grow: 1;"></div>
+        <button id="btn-cancel-issue-details" class="btn btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- WIZARD MODAL -->
+  <div id="wizard-modal" class="modal-overlay hidden">
+    <div class="modal wizard-modal">
+      <div class="modal-header">
+        <h3>✨ New Tour Setup Wizard</h3>
+        <button id="btn-close-wizard" class="btn-close">✕</button>
+      </div>
+      <div id="wizard-body" class="modal-body wizard-body">
+        
+        <!-- Step 1: Confirm Folder -->
+        <div id="wizard-step-1" class="wizard-step">
+          <div class="wizard-icon">📂</div>
+          <h2>Confirm Tour Folder</h2>
+          <p>Selected Folder: <code id="wizard-folder-path" style="background: var(--bg-primary); padding: 4px 8px; border-radius: 4px; display: block; margin: 8px 0;">...</code></p>
+          <p>I found <strong id="wizard-image-count">0</strong> images in this folder. Is this the correct location for your new tour?</p>
+          <div class="wizard-actions">
+            <button id="btn-wiz-next-1" class="btn btn-primary">Yes, Let's Continue</button>
+            <button id="btn-wiz-cancel" class="btn btn-secondary">No, Wrong Folder</button>
+          </div>
+        </div>
+
+        <!-- Step 2: Auto-detect Prefix -->
+        <div id="wizard-step-2" class="wizard-step hidden">
+          <div class="wizard-icon">🏷️</div>
+          <h2>ID Prefix Extraction</h2>
+          <p>By defining a <strong>prefix</strong> (like <code>DCP_</code>), we can automatically extract a <strong>unique ID number</strong> from filenames (e.g., <code>DCP_001.jpg</code> becomes ID <code>001</code>). These IDs are used to build the connections in your map file.</p>
+          
+          <div class="wizard-prefix-box" style="display: flex; gap: 16px; justify-content: center; align-items: center; margin-bottom: 8px;">
+             <div>
+               <label class="toolbar-label" style="display: block; margin-bottom: 4px;">Prefix</label>
+               <input type="text" id="wiz-prefix-input" class="prop-input" placeholder="e.g. DCP_">
+             </div>
+             <div>
+               <label class="toolbar-label" style="display: block; margin-bottom: 4px;">Digits</label>
+               <input type="number" id="wiz-digits-input" class="prop-input" style="width: 60px;" min="0" max="10" value="0">
+             </div>
+          </div>
+          <div id="wiz-prefix-msg" class="wizard-msg"></div>
+
+          <p class="small-note">Files that don't match this prefix can still be used as custom images.</p>
+
+          <div class="wizard-actions">
+            <button id="btn-wiz-next-2" class="btn btn-primary">Confirm Prefix</button>
+            <button id="btn-wiz-prev-2" class="btn btn-secondary">Back</button>
+          </div>
+        </div>
+
+        <!-- Step 3: Choose Mode -->
+        <div id="wizard-step-3" class="wizard-step hidden">
+          <div class="wizard-icon">🚀</div>
+          <h2>How would you like to start?</h2>
+          <p>You can organize images into <strong>Locales</strong> (physical locations) or start quickly in <strong>View Mode</strong> and add structure later.</p>
+          
+          <div class="wizard-mode-cards">
+            <div id="wiz-choice-locale" class="mode-card">
+              <div class="card-icon">🏛️</div>
+              <h3>Locale Mode</h3>
+              <p>Group photos by location first. Best for complex house tours.</p>
+            </div>
+            <div id="wiz-choice-view" class="mode-card">
+              <div class="card-icon">📷</div>
+              <h3>View Mode</h3>
+              <p>Start dragging photos directly into the navigation grid.</p>
+            </div>
+          </div>
+
+          <div class="wizard-actions">
+            <button id="btn-wiz-prev-3" class="btn btn-secondary">Back</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- LIGHTBOX OVERLAY -->
+  <div id="lightbox-overlay" class="lightbox-overlay hidden">
+    <button id="btn-lightbox-close" class="lightbox-btn close-btn">✕</button>
+    <button id="btn-lightbox-prev" class="lightbox-btn nav-btn prev-btn">❮</button>
+    <div class="lightbox-content">
+      <img id="lightbox-img" src="" alt="Popup Image">
+      <div id="lightbox-label" class="lightbox-label"></div>
+    </div>
+    <button id="btn-lightbox-next" class="lightbox-btn nav-btn next-btn">❯</button>
+  </div>
+
+  <script type="module" src="js/app.js?v=1.1"></script>
+</body>
+</html>

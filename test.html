@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Parser Test</title>
+  <style>
+    body { font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+    .pass { color: #3fb950; }
+    .fail { color: #f85149; }
+    pre { background: #0d1117; padding: 12px; border-radius: 6px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h2>TourMap Parser/Serializer Tests</h2>
+  <div id="results"></div>
+  <script type="module">
+    import { TourMap } from './js/dataModel.js';
+    import { parseMapFile } from './js/mapFileParser.js';
+    import { serializeMapFile } from './js/mapFileSerializer.js';
+
+    const out = document.getElementById('results');
+
+    function log(msg, isPass) {
+      const div = document.createElement('div');
+      div.className = isPass ? 'pass' : 'fail';
+      div.textContent = (isPass ? '✅ ' : '❌ ') + msg;
+      out.appendChild(div);
+    }
+
+    function logPre(text) {
+      const pre = document.createElement('pre');
+      pre.textContent = text;
+      out.appendChild(pre);
+    }
+
+    // Sample map file content (from SmallSampleTour/SampleTourLinks.txt)
+    const sampleText = `# ===  This is the link file for the sample tour. =====
+#
+! July 2001 Sample  -  Tour of our house.
+#
++ DCP_
+#
+$1 Inside front door.
+#
+0710 hs o0711
+Door is closed.
+Click "open" to open door.
+#
+0711 hs c0710 f0931
+Door is open.
+0712 hse f0723
+View toward living room.
+0713 he
+View toward couch.
+0715 hne f0734
+View toward dining room.
+0716 hn f0725
+1179 hnw
+0717 hw
+#
+$2 Living Room.
+0723 he
+0724 hn
+0718 hnw f1179
+0719 hsw
+0721 hs
+#
+$37 Our house. Outside front door.
+0931 hs
+0930 he
+0927 hn o0928 y
+0928 hn c0927 f0716
+0929 hw`;
+
+    // Test 1: Parse basic structure
+    const result = parseMapFile(sampleText);
+    log('Title parsed: ' + JSON.stringify(result.title), result.title === 'July 2001 Sample  -  Tour of our house.');
+    log('Prefix parsed: ' + JSON.stringify(result.filenamePrefix), result.filenamePrefix === 'DCP_');
+
+    // Test 2: Count link entries
+    const linkEntries = result.entries.filter(e => e.type === 'link');
+    log('Link entries count: ' + linkEntries.length, linkEntries.length === 18);
+
+    // Test 3: First link entry (0710)
+    const e710 = linkEntries.find(e => e.id === 710);
+    log('Entry 710 found', !!e710);
+    if (e710) {
+      log('  710 heading: ' + e710.heading, e710.heading === 'S');
+      log('  710 open link: ' + e710.links.o, e710.links.o === 711);
+      log('  710 localeId: ' + e710.localeId, e710.localeId === 1);
+      log('  710 description includes locale text', e710.description.includes('Inside front door'));
+      log('  710 description includes line text', e710.description.includes('Door is closed'));
+    }
+
+    // Test 4: Entry with forward link
+    const e712 = linkEntries.find(e => e.id === 712);
+    if (e712) {
+      log('  712 heading: ' + e712.heading, e712.heading === 'SE');
+      log('  712 forward link: ' + e712.links.f, e712.links.f === 723);
+    }
+
+    // Test 5: Home marker
+    const e927 = linkEntries.find(e => e.id === 927);
+    if (e927) {
+      log('  927 isHome: ' + e927.isHome, e927.isHome === true);
+      log('  927 open link: ' + e927.links.o, e927.links.o === 928);
+    }
+
+    // Test 6: Locale entries
+    const localeEntries = result.entries.filter(e => e.type === 'locale');
+    log('Locale entries count: ' + localeEntries.length, localeEntries.length === 3);
+
+    if (localeEntries[0]) {
+      log('  Locale 1 id: ' + localeEntries[0].localeId, localeEntries[0].localeId === 1);
+      log('  Locale 1 text: ' + localeEntries[0].localeText, localeEntries[0].localeText === 'Inside front door.');
+    }
+
+    // Test 7: Comments
+    const commentEntries = result.entries.filter(e => e.type === 'comment');
+    log('Comment entries found: ' + commentEntries.length, commentEntries.length >= 3);
+
+    // Test 8: Serialize and check it produces valid output
+    const serialized = serializeMapFile(result);
+    log('Serialized output is non-empty', serialized.length > 100);
+    logPre(serialized.substring(0, 500) + '...');
+
+    // Test 9: Round-trip — re-parse the serialized output
+    const result2 = parseMapFile(serialized);
+    const linkEntries2 = result2.entries.filter(e => e.type === 'link');
+    log('Round-trip: same number of link entries', linkEntries2.length === linkEntries.length);
+    log('Round-trip: title preserved', result2.title === result.title);
+    log('Round-trip: prefix preserved', result2.filenamePrefix === result.filenamePrefix);
+
+    // Test 10: Check all IDs match
+    const ids1 = linkEntries.map(e => e.id).sort((a,b) => a-b);
+    const ids2 = linkEntries2.map(e => e.id).sort((a,b) => a-b);
+    log('Round-trip: all IDs match', JSON.stringify(ids1) === JSON.stringify(ids2));
+
+    // Summary
+    const allDivs = out.querySelectorAll('div');
+    const passes = [...allDivs].filter(d => d.className === 'pass').length;
+    const fails = [...allDivs].filter(d => d.className === 'fail').length;
+    const h = document.createElement('h3');
+    h.textContent = `Results: ${passes} passed, ${fails} failed`;
+    h.style.color = fails === 0 ? '#3fb950' : '#f85149';
+    out.insertBefore(h, out.firstChild);
+  </script>
+</body>
+</html>
