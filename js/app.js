@@ -965,7 +965,8 @@ function onLinkChanged(command, targetId, imageName) {
       // Also, if the command was 'f', revCmd is 'b'.
       let allowReverse = true;
       if (revCmd === 'b' && command === 'f') {
-         const sourceGroup = tourMap.getSyncGroupForNode(entry.id);
+         const sourceGroups = tourMap.getSyncGroupsForNode(entry.id);
+         const sourceGroup = sourceGroups.find(g => g.type === 'door');
          if (sourceGroup && sourceGroup.isOpen) {
             allowReverse = false; // Block 'b' auto-assignment
          }
