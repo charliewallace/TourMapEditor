@@ -76,14 +76,14 @@ export class MapValidator {
       
       for (const group of groups) {
         if (group.type === 'sequence' && !group.isLoose) {
-          // np/ej: 'b' is included but the loop has an exception for the valid
-          // entry-point pattern (one member's b points to a sibling in the group).
-          // qw (shift): only 'b' is checked — it must be shared across the whole shift cluster.
+          // np/ej: 'f' (forward) is shared — all members in a next/prev or earlier/later
+          // sequence share the same forward destination. 'z' (zoom) is per-member.
+          // qw (shift): only 'b' (ESC) is checked — all other links are per-shifted-position.
           let directionalCmds;
           if (group.subtype === 'qw') {
             directionalCmds = ['b'];
           } else {
-            directionalCmds = ['l', 'r', 'u', 'd', 'a', 'b'];
+            directionalCmds = ['l', 'r', 'u', 'd', 'a', 'f', 'b'];
           }
           
           let hasConflict = false;
@@ -140,8 +140,85 @@ export class MapValidator {
             });
           }
         }
+
+        // 6. Door Sync Conflict Check
+        // Detect when the closed member of a door pair has 'f' or 'z' links, which
+        // are only valid on the open member.
+        if (group.type === 'door') {
+          const closedId = group.isClosed ? entry.id : group.siblings[0];
+          const closedEntry = tourMap.findById(closedId);
+          const closedIdx = closedEntry ? tourMap.entries.indexOf(closedEntry) : -1;
+          if (closedEntry && closedIdx >= 0) {
+            for (const cmd of ['f', 'z']) {
+              if (closedEntry.links[cmd]) {
+                const cmdLabel = cmd === 'f' ? 'Forward' : 'Zoom In';
+                issues.push({
+                  type: 'warning',
+                  category: 'Door Sync Conflict',
+                  message: `Closed-door #${closedId} has a '${cmdLabel}' link — this command is only valid on the open member.`,
+                  lineIndex: closedIdx,
+                  id: closedId,
+                  actionData: { type: 'door_open_only_conflict', cmd, closedId, openId: group.isClosed ? group.siblings[0] : entry.id }
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // 7. q/w Shift + l/r Ambiguity Warning
+      // If an entry is part of a shift cluster (has q or w links) but ALSO has
+      // l or r links, flag it — in a zoomed/shifted context these likely conflict.
+      // Suppress with *loose or +loose marker.
+      if ((entry.links['q'] || entry.links['w']) && (entry.links['l'] || entry.links['r'])) {
+        const isLoose = entry.unsupportedTokens &&
+          entry.unsupportedTokens.some(t => t === '*loose' || t === '+loose');
+        if (!isLoose) {
+          issues.push({
+            type: 'warning',
+            category: 'Navigation Ambiguity',
+            message: `Entry #${entry.id} has both shift (q/w) and directional (l/r) links. In a zoomed/shifted context, l/r may conflict with q/w navigation. Add * (loose marker) to suppress.`,
+            lineIndex: index,
+            id: entry.id
+          });
+        }
+      }
+
+      // 8. Open Door Reference Check
+      // If any non-door-mechanism link (not 'o' or 'c') points to the OPEN member of a
+      // door pair, the editor should be prompted to change it to the CLOSED member.
+      // Rationale: the nav-grid auto-redirects open→closed at runtime, but the stored
+      // link target shows the open-door image in neighbor cells, which is misleading.
+      // Suppressible with *loose or +loose.
+      const isLooseEntry = entry.unsupportedTokens &&
+        entry.unsupportedTokens.some(t => t === '*loose' || t === '+loose');
+      if (!isLooseEntry) {
+        for (const cmd in entry.links) {
+          // Skip the door-mechanism commands — 'o' (go open) and 'c' (go closed) are correct
+          if (cmd === 'o' || cmd === 'c') continue;
+          const targetId = entry.links[cmd];
+          const target = tourMap.findById(targetId);
+          if (!target) continue;
+          // Is the target the OPEN member of a verified door pair?
+          // Open member = has a 'c' link, and the 'c' target has an 'o' pointing back.
+          const closedId = target.links['c'];
+          if (closedId) {
+            const closedSibling = tourMap.findById(closedId);
+            if (closedSibling && closedSibling.links['o'] === targetId) {
+              issues.push({
+                type: 'warning',
+                category: 'Open Door Reference',
+                message: `Link '${cmd}' on #${entry.id} points to open-door view #${targetId}. The closed-door view #${closedId} is the preferred target (or add * to suppress).`,
+                lineIndex: index,
+                id: entry.id,
+                actionData: { type: 'open_door_ref', cmd, openId: targetId, closedId }
+              });
+            }
+          }
+        }
       }
     });
+
 
     // Deduplicate Sync issues so we don't spam one per node in the sequence
     const dedupedIssues = [];

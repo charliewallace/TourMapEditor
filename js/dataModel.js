@@ -457,7 +457,10 @@ export class TourMap {
     }
     entry.markModified();
 
-    const symmetricalCommands = ['l', 'r', 'u', 'd', 'z', 'a', 'b'];
+    // Commands that sync bidirectionally across all door/sequence members
+    const symmetricalCommands = ['l', 'r', 'u', 'd', 'a', 'b'];
+    // Commands that exist ONLY on the open member of a door pair (never the closed member)
+    const DOOR_OPEN_ONLY = ['f', 'z'];
     const modifiedSiblings = [];
 
     // Propagate for each group independently
@@ -473,34 +476,39 @@ export class TourMap {
         // Sequence subtype propagation rules
         if (group.type === 'sequence') {
           if (group.subtype === 'qw') {
-             // qw shifts only sync 'b' links
-             if (command === 'b') {
-               shouldPropagate = true;
-             }
+            // q/w shifts: only 'b' (the ESC action) is shared across the cluster.
+            // All other commands (l, r, f, z, u, d) are per-member because each
+            // shifted position is a distinct viewpoint with its own context.
+            if (command === 'b') {
+              shouldPropagate = true;
+            }
           } else {
-             // np and ej sequences: 'b' (back) is a per-view navigation chain,
-             // not a shared group property. Don't propagate it.
-             const npEjCmds = ['l', 'r', 'u', 'd', 'a']; // z excluded intentionally
-             if (npEjCmds.includes(command)) {
-               shouldPropagate = true;
-             }
+            // np sequences: 'f' (forward) is shared — all members go to the same
+            // next destination. 'z' (zoom) is per-member — each step may zoom
+            // to different content. 'b' is handled via the entry-point exception below.
+            // ej sequences: same shared commands as np.
+            const sharedCmds = ['l', 'r', 'u', 'd', 'a', 'f'];
+            if (sharedCmds.includes(command)) {
+              shouldPropagate = true;
+            }
           }
         } else if (group.type === 'door') {
-           // Doors
-           if (symmetricalCommands.includes(command)) {
-              shouldPropagate = true;
-           } else if (command === 'f') {
-              if (group.isOpen) {
-                 shouldPropagate = true;
-              } else if (group.isClosed) {
-                 shouldPropagate = false;
-                 if (sib.links['f']) {
-                   delete sib.links['f'];
-                   sib.markModified();
-                   modifiedSiblings.push(sibId);
-                 }
-              }
-           }
+          if (DOOR_OPEN_ONLY.includes(command)) {
+            // 'f' and 'z' belong ONLY to the open member.
+            if (group.isClosed) {
+              // We ARE the closed node — this command isn't allowed here.
+              // Strip it from ourselves (defensive) and don't touch the sibling.
+              delete entry.links[command];
+              entry.markModified();
+              shouldPropagate = false;
+            } else {
+              // We ARE the open node — this command is ours alone. Do NOT copy to closed.
+              shouldPropagate = false;
+            }
+          } else if (symmetricalCommands.includes(command)) {
+            // l, r, u, d, a, b always sync across both door states
+            shouldPropagate = true;
+          }
         }
 
         if (shouldPropagate) {

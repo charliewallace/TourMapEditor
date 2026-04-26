@@ -4,7 +4,7 @@
  * Supports Chrome/Edge File System Access API with Firefox fallback.
  */
 
-import { TourMap, MapEntry } from './dataModel.js';
+import { TourMap, MapEntry, COMMAND_LABELS } from './dataModel.js';
 import { parseMapFile } from './mapFileParser.js';
 import { serializeMapFile } from './mapFileSerializer.js';
 import { LineList } from './lineList.js';
@@ -179,6 +179,11 @@ const navGrid = new NavGrid(
   onCycleHeading
 );
 navGrid.onPrimaryDrop = onPrimaryDrop;
+navGrid.onSetAsClosedDoor = () => {
+  // The banner already switches to the guidance state.
+  // Show a brief toast to reinforce what to do next.
+  showToast('🔒 Closed door designated — now drag the open-door image to the 🔓 Open chip to complete the pair.');
+};
 
 const propertiesPanel = new PropertiesPanel(
   tourMap,
@@ -645,7 +650,8 @@ btnFixAllOmissions.addEventListener('click', () => {
   // Helper: apply union-of-links fix to a single omission issue
   const fixOmissionGroup = (issue) => {
     const allIds = [issue.id, ...issue.actionData.groupId];
-    let directionalCmds = ['l', 'r', 'u', 'd', 'a', 'b'];
+    // np/ej: 'f' (forward) is now synced across all members; 'z' (zoom) remains per-member
+    let directionalCmds = ['l', 'r', 'u', 'd', 'a', 'f', 'b'];
     if (issue.actionData.subtype === 'qw') directionalCmds = ['b'];
 
     const unifiedLinks = {};
@@ -869,6 +875,21 @@ function onLineSelected(index) {
 }
 
 function onNavigateToPhoto(photoId, fromCommand) {
+  // --- Doors Default to Closed ---
+  // If we're arriving at the OPEN member of a door pair via any command other
+  // than 'o' (the explicit "Open" chip), redirect to the closed sibling instead.
+  // This means navigating back to a door view always shows the closed state.
+  if (fromCommand !== 'o') {
+    const potentialOpen = tourMap.findById(photoId);
+    if (potentialOpen && potentialOpen.links['c']) {
+      const closedSibling = tourMap.findById(potentialOpen.links['c']);
+      // Verify it's a true reciprocal door pair before redirecting
+      if (closedSibling && closedSibling.links['o'] === photoId) {
+        photoId = closedSibling.id;
+      }
+    }
+  }
+
   const currentPhotoId = (selectedIndex >= 0 && tourMap.entries[selectedIndex].type === 'link') 
       ? tourMap.entries[selectedIndex].id 
       : null;
@@ -1103,29 +1124,30 @@ function linkAsDoor(idA, idB, imageNameB = null, currentIsB = false) {
     entryB.links['c'] = idA;
   }
 
-  // Copy directional links from entryA to entryB so the door variant
-  // shows the same neighbors in the nav grid
-  for (const cmd of ['l', 'r', 'f', 'b', 'a', 'u', 'd']) {
+  // Copy shared directional links from entryA to entryB.
+  // 'f' (forward) and 'z' (zoom) are open-door-only commands and must never
+  // appear on the closed member — they are excluded from the copy loop.
+  const DOOR_OPEN_ONLY = ['f', 'z'];
+  for (const cmd of ['l', 'r', 'b', 'a', 'u', 'd']) {
     if (entryA.links[cmd] && !entryB.links[cmd]) {
-      // If we are copying to the CLOSED variant, never copy 'f'
-      if (cmd === 'f') {
-         if (currentIsB) {
-            // entryB is OPEN, entryA is CLOSED. We shouldn't copy 'f' from closed to open because closed shouldn't have it.
-            // But if it does, we can copy it.
-         } else {
-            // entryB is CLOSED. Do NOT copy 'f' to it.
-            continue;
-         }
-      }
       entryB.links[cmd] = entryA.links[cmd];
     }
   }
 
-  // Ensure closed doors never keep an 'f' link
-  const closedEntry = currentIsB ? entryA : entryB;
-  if (closedEntry.links['f']) {
-     delete closedEntry.links['f'];
-  }
+  // Ensure the closed entry NEVER has f or z, regardless of prior state.
+  // Capture what gets stripped so we can warn the author.
+  //
+  // Polarity: when currentIsB=false → entryA.links['o']=idB → entryA IS closed.
+  //           when currentIsB=true  → entryB.links['o']=idA → entryB IS closed.
+  const closedEntry = currentIsB ? entryB : entryA;
+  const strippedLinks = [];
+  DOOR_OPEN_ONLY.forEach(cmd => {
+    if (closedEntry.links[cmd]) {
+      strippedLinks.push({ cmd, targetId: closedEntry.links[cmd] });
+      delete closedEntry.links[cmd];
+      closedEntry.markModified();
+    }
+  });
 
   // Inherit locale for existing entryB
   if (entryA.localeId !== null && entryA.localeId !== -1 && entryB.localeId !== entryA.localeId) {
@@ -1149,6 +1171,27 @@ function linkAsDoor(idA, idB, imageNameB = null, currentIsB = false) {
   refreshCurrentSelection();
   rawLineEditor.update(selectedIndex);
   runValidation();
+
+  // --- Issue 2: Notify author of auto-stripped links and stale references ---
+  if (strippedLinks.length > 0) {
+    const desc = strippedLinks
+      .map(s => `'${COMMAND_LABELS[s.cmd] || s.cmd}' \u2192 #${s.targetId}`)
+      .join(', ');
+    showToast(`🚪 Door created: removed ${desc} from closed-door #${closedEntry.id} (not valid when closed). Open Checkout to review.`);
+  }
+
+  // Auto-pop the checkout report ONLY for hard errors on the closed door itself
+  // (i.e. a forbidden f/z link wasn't stripped automatically).
+  // We do NOT auto-pop for 'open_door_ref' — neighboring entries may legitimately
+  // still point to the open door right after creation; the user can clean those up
+  // at their own pace via the Issues button.
+  const postDoorIssues = window.lastValidationResults || [];
+  const hasHardDoorError = postDoorIssues.some(i =>
+    i.actionData && i.actionData.type === 'door_open_only_conflict'
+  );
+  if (hasHardDoorError) {
+    showCheckoutReport();
+  }
 }
 
 function onEntryPropertyChanged() {
@@ -1372,11 +1415,16 @@ function loadMapFile(text) {
   markClean();
   document.title = tourMap.title ? `TourMap Editor — ${tourMap.title}` : 'TourMap Editor';
   
-  // Auto-pop the checkout report if there are sequence mismatches
+  // Auto-pop the checkout report if there are issues that benefit from guided resolution
   const issues = window.lastValidationResults || [];
-  const hasMismatch = issues.some(i => i.actionData && i.actionData.type === 'sequence_mismatch');
+  const hasMismatch = issues.some(i => i.actionData && (
+    i.actionData.type === 'sequence_mismatch' ||
+    i.actionData.type === 'open_door_ref' ||
+    i.actionData.type === 'door_open_only_conflict'
+  ));
   if (hasMismatch) {
     showCheckoutReport();
+
   }
 }
 
@@ -1450,11 +1498,33 @@ function showCheckoutReport() {
     issues.forEach(issue => {
       const item = document.createElement('div');
       item.className = 'validation-item';
+
+      // Build action buttons for actionable issue types
+      let actionBtnHtml = '';
+      if (issue.actionData) {
+        if (issue.actionData.type === 'sequence_mismatch') {
+          actionBtnHtml = ' <span class="info-icon" style="cursor: pointer; opacity: 0.8;" title="Fix Problem Details">🔧</span>';
+        } else if (issue.actionData.type === 'open_door_ref') {
+          actionBtnHtml = `
+            <button class="btn-fix-open-door-ref" data-entry-id="${issue.id}" data-cmd="${issue.actionData.cmd}" data-closed-id="${issue.actionData.closedId}"
+              style="margin-left:8px; padding:2px 8px; border-radius:4px; font-size:11px; background:var(--success); color:#000; border:none; cursor:pointer;"
+              title="Change link to point to the closed-door view">Use Closed Door</button>
+            <button class="btn-suppress-open-door-ref" data-entry-id="${issue.id}"
+              style="margin-left:4px; padding:2px 8px; border-radius:4px; font-size:11px; background:var(--bg-elevated); color:var(--text-secondary); border:1px solid var(--border); cursor:pointer;"
+              title="Add * loose marker to suppress this warning">Suppress (*)</button>`;
+        } else if (issue.actionData.type === 'door_open_only_conflict') {
+          actionBtnHtml = `
+            <button class="btn-fix-door-conflict" data-entry-id="${issue.id}" data-cmd="${issue.actionData.cmd}"
+              style="margin-left:8px; padding:2px 8px; border-radius:4px; font-size:11px; background:var(--danger); color:#fff; border:none; cursor:pointer;"
+              title="Remove the forbidden link from the closed-door view">Remove Link</button>`;
+        }
+      }
+
       item.innerHTML = `
         <span class="issue-type-badge issue-type-${issue.type}">${issue.type}</span>
         <div class="issue-content">
           <div class="issue-title">${issue.category}</div>
-          <div class="issue-msg">${issue.message}${issue.actionData && issue.actionData.type === 'sequence_mismatch' ? ' <span class="info-icon" style="cursor: pointer; opacity: 0.8;" title="Fix Problem Details">🔧</span>' : ''}</div>
+          <div class="issue-msg">${issue.message}${actionBtnHtml}</div>
           <div class="issue-meta" style="font-size: 14px; font-weight: 600; margin-top: 6px; color: var(--text-primary);">Line: ${issue.lineIndex + 3}${issue.id ? ` <span style="font-weight:normal; color: var(--text-secondary);">| Photo ID: #${issue.id}</span>` : ''}</div>
         </div>
       `;
@@ -1479,15 +1549,69 @@ function showCheckoutReport() {
         }
       };
       
-      // Wire up action buttons if present
+      // Wire up action buttons after DOM insertion
       setTimeout(() => {
-         const infoIcon = item.querySelector('.info-icon');
-         if (infoIcon) {
-            infoIcon.onclick = (e) => {
-               e.stopPropagation();
-               showIssueDetails(issue);
-            };
-         }
+        const infoIcon = item.querySelector('.info-icon');
+        if (infoIcon) {
+          infoIcon.onclick = (e) => { e.stopPropagation(); showIssueDetails(issue); };
+        }
+
+        // "Use Closed Door" button: repoint the link to the closed-door ID
+        const fixOpenDoorBtn = item.querySelector('.btn-fix-open-door-ref');
+        if (fixOpenDoorBtn) {
+          fixOpenDoorBtn.onclick = (e) => {
+            e.stopPropagation();
+            const entryId = fixOpenDoorBtn.dataset.entryId;
+            const cmd = fixOpenDoorBtn.dataset.cmd;
+            const closedId = fixOpenDoorBtn.dataset.closedId;
+            const entry = tourMap.findById(entryId);
+            if (entry) {
+              entry.links[cmd] = closedId;
+              entry.markModified();
+              markDirty();
+              runValidation();
+              showCheckoutReport();
+              refreshCurrentSelection();
+            }
+          };
+        }
+
+        // "Suppress (*)" button: add *loose to suppress open-door-ref warning
+        const suppressBtn = item.querySelector('.btn-suppress-open-door-ref');
+        if (suppressBtn) {
+          suppressBtn.onclick = (e) => {
+            e.stopPropagation();
+            const entryId = suppressBtn.dataset.entryId;
+            const entry = tourMap.findById(entryId);
+            if (entry && !entry.unsupportedTokens.includes('*loose')) {
+              entry.unsupportedTokens.push('*loose');
+              entry.markModified();
+              markDirty();
+              runValidation();
+              showCheckoutReport();
+              refreshCurrentSelection();
+            }
+          };
+        }
+
+        // "Remove Link" button: strip the forbidden f/z from the closed door
+        const fixDoorConflictBtn = item.querySelector('.btn-fix-door-conflict');
+        if (fixDoorConflictBtn) {
+          fixDoorConflictBtn.onclick = (e) => {
+            e.stopPropagation();
+            const entryId = fixDoorConflictBtn.dataset.entryId;
+            const cmd = fixDoorConflictBtn.dataset.cmd;
+            const entry = tourMap.findById(entryId);
+            if (entry && entry.links[cmd]) {
+              delete entry.links[cmd];
+              entry.markModified();
+              markDirty();
+              runValidation();
+              showCheckoutReport();
+              refreshCurrentSelection();
+            }
+          };
+        }
       }, 0);
       
       list.appendChild(item);

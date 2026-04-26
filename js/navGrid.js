@@ -25,7 +25,9 @@ export class NavGrid {
     this.onLinkChanged = onLinkChanged;
     this.getImageUrl = getImageUrl;
     this.onHeadingClick = onHeadingClick;
+    this.onSetAsClosedDoor = null; // optional callback: () => void
     this.currentEntry = null;
+    this.doorHelpBanner = document.getElementById('door-help-banner');
     this._setupCells();
     this._setupChips();
   }
@@ -307,6 +309,34 @@ export class NavGrid {
       
       customContainer.appendChild(chip);
     }
+
+    // --- Door-Locked Cell Overlay ---
+    // When the current entry is the CLOSED member of a door pair, the Forward (f)
+    // and Zoom (z) cells should visually block drops and show a lock indicator.
+    const DOOR_OPEN_ONLY_CMDS = ['f', 'z'];
+    const isClosed = this._isClosedDoorEntry(entry);
+    const cells2 = document.querySelectorAll('#nav-grid .nav-cell');
+    cells2.forEach(cell => {
+      const cmd = cell.dataset.command;
+      // First, remove any stale lock state from previous renders
+      cell.classList.remove('door-locked');
+      const staleOverlay = cell.querySelector('.door-locked-overlay');
+      if (staleOverlay) staleOverlay.remove();
+
+      if (isClosed && DOOR_OPEN_ONLY_CMDS.includes(cmd)) {
+        cell.classList.add('door-locked');
+        const overlay = document.createElement('div');
+        overlay.className = 'door-locked-overlay';
+        overlay.innerHTML = `
+          <span class="lock-icon">🔒</span>
+          <span class="lock-msg">Not allowed<br>when door is closed</span>
+        `;
+        cell.appendChild(overlay);
+      }
+    });
+
+    // Update the door-help banner
+    this._updateDoorBanner(entry);
   }
 
   _clearAll() {
@@ -315,15 +345,112 @@ export class NavGrid {
       const cmd = cell.dataset.command;
       const imageDiv = cell.querySelector('.cell-image');
       imageDiv.innerHTML = `<div class="cell-placeholder">${cmd === 'primary' ? '●' : cmd}</div>`;
-      cell.classList.remove('has-image');
+      cell.classList.remove('has-image', 'door-locked');
       const badge = cell.querySelector('.cell-id-badge');
       if (badge) badge.remove();
+      const lockOverlay = cell.querySelector('.door-locked-overlay');
+      if (lockOverlay) lockOverlay.remove();
     });
     const chips = document.querySelectorAll('#secondary-links .link-chip');
     chips.forEach(chip => {
       chip.querySelector('.chip-target').textContent = '';
-      chip.classList.remove('active');
+      chip.classList.remove('active', 'guidance-pulse');
     });
+    if (this.doorHelpBanner) this.doorHelpBanner.className = 'door-help-banner hidden';
+  }
+
+  /**
+   * Returns true if the given entry is the CLOSED member of a door pair.
+   * Closed member = has an 'o' (open) link, and the open sibling reciprocally
+   * points back with a 'c' (close) link.
+   * @param {import('./dataModel.js').MapEntry|null} entry
+   * @returns {boolean}
+   */
+  _isClosedDoorEntry(entry) {
+    if (!entry || !entry.links) return false;
+    const openTargetId = entry.links['o'];
+    if (!openTargetId) return false;
+    const openSibling = this.tourMap.findById(openTargetId);
+    return !!(openSibling && openSibling.links['c'] === entry.id);
+  }
+
+  /**
+   * Updates the door-help-banner to match the current entry's door relationship.
+   *
+   * States:
+   *  - 'state-none'        : plain image, not yet part of any door pair
+   *    → show "Set as Closed Door" button
+   *  - 'state-needs-open'  : closed door with no linked open member yet
+   *    → pulsing hint to drag open-door image to the Open chip
+   *  - 'state-is-closed'   : closed door, fully linked
+   *    → informational amber label
+   *  - 'state-is-open'     : open door
+   *    → informational green label
+   */
+  _updateDoorBanner(entry) {
+    const banner = this.doorHelpBanner;
+    if (!banner) return;
+
+    // Stop any existing chip pulse
+    document.querySelectorAll('#secondary-links .link-chip').forEach(c =>
+      c.classList.remove('guidance-pulse')
+    );
+
+    if (!entry || entry.type !== 'link') {
+      banner.className = 'door-help-banner hidden';
+      return;
+    }
+
+    const hasO = !!entry.links['o'];
+    const hasC = !!entry.links['c'];
+
+    if (!hasO && !hasC) {
+      // Plain image — offer to designate as closed door
+      banner.className = 'door-help-banner state-none';
+      banner.innerHTML = `
+        <span style="opacity: 0.7;">🚪</span>
+        <span style="flex: 1;">Is this image a door?</span>
+        <button class="door-help-btn" id="btn-set-as-closed-door">🔒 Set as Closed Door</button>
+      `;
+      const btn = banner.querySelector('#btn-set-as-closed-door');
+      btn.addEventListener('click', () => {
+        if (this.onSetAsClosedDoor) this.onSetAsClosedDoor();
+        // Switch to "needs open" state immediately to guide the next step
+        this._showNeedsOpenState(entry);
+      });
+
+    } else if (hasO) {
+      // Closed door — check whether the open sibling actually links back
+      const openSibling = this.tourMap.findById(entry.links['o']);
+      const fullyLinked = openSibling && openSibling.links['c'] === entry.id;
+
+      if (!fullyLinked) {
+        // Orphaned 'o' link — treat as needs-open
+        this._showNeedsOpenState(entry);
+      } else {
+        // Fully linked closed door
+        banner.className = 'door-help-banner state-is-closed';
+        banner.innerHTML = `⚠️ Closed-door state — Forward and Zoom are disabled here. Switch to the open state to add those links.`;
+      }
+
+    } else if (hasC) {
+      // Open door
+      banner.className = 'door-help-banner state-is-open';
+      banner.innerHTML = `✅ Open-door state — Forward and Zoom links are only active when the door is open.`;
+    }
+  }
+
+  /** Shows the animated "drag to Open chip" hint and pulses the Open chip. */
+  _showNeedsOpenState(entry) {
+    const banner = this.doorHelpBanner;
+    if (!banner) return;
+    banner.className = 'door-help-banner state-needs-open';
+    banner.innerHTML = `
+      <span>🚪 Drag the <strong>open-door image</strong> to the <strong>Open (🔓) chip</strong> below to complete this door pair.</span>
+    `;
+    // Pulse the Open chip
+    const openChip = document.querySelector('#secondary-links .link-chip[data-command="o"]');
+    if (openChip) openChip.classList.add('guidance-pulse');
   }
 
   _showContextMenu(x, y, cmd) {
