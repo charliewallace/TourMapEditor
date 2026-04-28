@@ -179,7 +179,8 @@ export class MapValidator {
             category: 'Navigation Ambiguity',
             message: `Entry #${entry.id} has both shift (q/w) and directional (l/r) links. In a zoomed/shifted context, l/r may conflict with q/w navigation. Add * (loose marker) to suppress.`,
             lineIndex: index,
-            id: entry.id
+            id: entry.id,
+            actionData: { type: 'nav_ambiguity' }
           });
         }
       }

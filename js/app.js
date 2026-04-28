@@ -716,10 +716,10 @@ btnFixAllOmissions.addEventListener('click', () => {
   banner.style.cssText = 'background: var(--bg-elevated); border-left: 4px solid var(--success, #48bb78); padding: 10px 14px; margin-bottom: 12px; border-radius: var(--radius-sm); font-size: 13px;';
   if (totalFixed > 0) {
     banner.innerHTML = `✅ Fixed <strong>${totalFixed}</strong> sync omission group${totalFixed !== 1 ? 's' : ''} in ${passes} pass${passes !== 1 ? 'es' : ''}.`
-      + (conflicts > 0 ? ` <span style="color:var(--warning);">${conflicts} conflict${conflicts !== 1 ? 's' : ''} still require manual resolution.</span>` : '')
-      + (remaining > 0 ? ` <span style="color:var(--text-tertiary);">(${remaining} omission${remaining !== 1 ? 's' : ''} remain — may need 'Fix Problem' individually.)</span>` : '');
+      + (conflicts > 0 ? ` <span style="color:var(--warning);">${conflicts} conflict${conflicts !== 1 ? 's' : ''} still require manual resolution — use the 🔧 Fix… button on each.</span>` : '')
+      + (remaining > 0 ? ` <span style="color:var(--text-tertiary);">(${remaining} sync omission${remaining !== 1 ? 's' : ''} remain — try the 🔧 Fix… button on each for more detail.)</span>` : '');
   } else {
-    banner.innerHTML = `ℹ️ No sync omissions found to fix.`;
+    banner.innerHTML = `ℹ️ No sync omissions to fix. (This button only addresses <em>Sync Omission</em> warnings — other warning types have their own action buttons in each row.)`;
   }
   if (checkoutResults.firstChild) {
     checkoutResults.insertBefore(banner, checkoutResults.firstChild);
@@ -918,8 +918,23 @@ function onNavigateToPhoto(photoId, fromCommand) {
     // Only auto-stitch if it's an explicit manual link, not an autoLink
     if (revCmd && currentEntry && currentEntry.links[fromCommand] === photoId) {
       if (!targetEntry.links[revCmd]) {
-        targetEntry.links[revCmd] = currentPhotoId;
-        changed = true;
+        // Guard: never auto-stitch 'f' (Forward) onto the closed member of a door pair.
+        // 'f' is door-open-only — writing it to a closed door entry causes the
+        // "Not Allowed" overlay to appear on its Forward cell.
+        let blockStitch = false;
+        if (revCmd === 'f') {
+          const openId = targetEntry.links['o'];
+          if (openId) {
+            const openSibling = tourMap.findById(openId);
+            if (openSibling && openSibling.links['c'] === targetEntry.id) {
+              blockStitch = true; // targetEntry is verified closed door
+            }
+          }
+        }
+        if (!blockStitch) {
+          targetEntry.links[revCmd] = currentPhotoId;
+          changed = true;
+        }
       }
     }
     
@@ -983,18 +998,41 @@ function onLinkChanged(command, targetId, imageName) {
     if (revCmd && !targetEntry.links[revCmd]) {
       // Enforcement rule: Do not auto-assign a 'b' (back) link to a room entry if it came through a door ('f' from an Open door)
       // Because we want the user to turn around and open it manually.
-      // Also, if the command was 'f', revCmd is 'b'.
       let allowReverse = true;
       if (revCmd === 'b' && command === 'f') {
          const sourceGroups = tourMap.getSyncGroupsForNode(entry.id);
          const sourceGroup = sourceGroups.find(g => g.type === 'door');
          if (sourceGroup && sourceGroup.isOpen) {
-            allowReverse = false; // Block 'b' auto-assignment
+            allowReverse = false; // Block 'b' auto-assignment from open door's 'f'
          }
       }
       
       if (allowReverse) {
         tourMap.updateLinkWithSync(targetEntry.id, revCmd, entry.id);
+      }
+    }
+
+    // 2a. Zoom special case: auto-add 'b' (back/escape) on the zoom target.
+    // OPPOSITE_CMDS doesn't include 'z' in the general table because the back
+    // destination depends on whether the source is a door entry.
+    // Rule: if zooming from the OPEN member of a door pair, point 'b' back to
+    // the CLOSED sibling (avoids an Open Door Reference warning and is correct
+    // semantics — ESC from zoom exits to the door-closed state). Otherwise,
+    // point 'b' back to the source directly.
+    if (command === 'z' && !targetEntry.links['b']) {
+      const sourceGroups = tourMap.getSyncGroupsForNode(entry.id);
+      const doorGroup = sourceGroups.find(g => g.type === 'door' && !g.isClosed);
+      if (doorGroup) {
+        // Source is the open member — back from zoom → closed sibling
+        const closedId = entry.links['c'];
+        if (closedId) {
+          tourMap.updateLinkWithSync(targetEntry.id, 'b', closedId);
+        } else {
+          tourMap.updateLinkWithSync(targetEntry.id, 'b', entry.id);
+        }
+      } else {
+        // Source is a normal (non-door) view
+        tourMap.updateLinkWithSync(targetEntry.id, 'b', entry.id);
       }
     }
 
@@ -1503,7 +1541,7 @@ function showCheckoutReport() {
       let actionBtnHtml = '';
       if (issue.actionData) {
         if (issue.actionData.type === 'sequence_mismatch') {
-          actionBtnHtml = ' <span class="info-icon" style="cursor: pointer; opacity: 0.8;" title="Fix Problem Details">🔧</span>';
+          actionBtnHtml = ' <button class="info-icon btn-show-issue-details" style="cursor: pointer; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 11px; color: var(--text-secondary);" title="Open Fix Problem dialog">🔧 Fix…</button>';
         } else if (issue.actionData.type === 'open_door_ref') {
           actionBtnHtml = `
             <button class="btn-fix-open-door-ref" data-entry-id="${issue.id}" data-cmd="${issue.actionData.cmd}" data-closed-id="${issue.actionData.closedId}"
@@ -1517,6 +1555,11 @@ function showCheckoutReport() {
             <button class="btn-fix-door-conflict" data-entry-id="${issue.id}" data-cmd="${issue.actionData.cmd}"
               style="margin-left:8px; padding:2px 8px; border-radius:4px; font-size:11px; background:var(--danger); color:#fff; border:none; cursor:pointer;"
               title="Remove the forbidden link from the closed-door view">Remove Link</button>`;
+        } else if (issue.actionData.type === 'nav_ambiguity') {
+          actionBtnHtml = `
+            <button class="btn-suppress-nav-ambiguity" data-entry-id="${issue.id}"
+              style="margin-left:8px; padding:2px 8px; border-radius:4px; font-size:11px; background:var(--bg-elevated); color:var(--text-secondary); border:1px solid var(--border); cursor:pointer;"
+              title="Add * loose marker to suppress this warning — use only if the l/r links are intentional here">Suppress (*)</button>`;
         }
       }
 
@@ -1551,9 +1594,27 @@ function showCheckoutReport() {
       
       // Wire up action buttons after DOM insertion
       setTimeout(() => {
-        const infoIcon = item.querySelector('.info-icon');
+        const infoIcon = item.querySelector('.btn-show-issue-details');
         if (infoIcon) {
           infoIcon.onclick = (e) => { e.stopPropagation(); showIssueDetails(issue); };
+        }
+
+        // "Suppress (*)" button for Navigation Ambiguity
+        const suppressNavBtn = item.querySelector('.btn-suppress-nav-ambiguity');
+        if (suppressNavBtn) {
+          suppressNavBtn.onclick = (e) => {
+            e.stopPropagation();
+            const entryId = suppressNavBtn.dataset.entryId;
+            const entry = tourMap.findById(entryId);
+            if (entry && !entry.unsupportedTokens.includes('*loose')) {
+              entry.unsupportedTokens.push('*loose');
+              entry.markModified();
+              markDirty();
+              runValidation();
+              showCheckoutReport();
+              refreshCurrentSelection();
+            }
+          };
         }
 
         // "Use Closed Door" button: repoint the link to the closed-door ID
@@ -1679,9 +1740,9 @@ function showIssueDetails(issue, userResolvedConflicts = {}) {
 
   let html = '';
   if (hasConflicts) {
-     html += `<p style="margin-bottom: 12px; color: var(--warning);">Conflicts detected! The displayed group is a ${label} linked set that is not in sync. Multiple views have different destinations for the same direction. <strong>Please click a red conflicting link below</strong> to resolve the conflict for the sequence.</p>`;
+     html += `<p style="margin-bottom: 12px; color: var(--warning);">These photos are linked as a <strong>${label}</strong> sequence, so their directional links must match across all members. Multiple views disagree on a destination — <strong>click a red conflict badge below</strong> to choose which value the whole sequence should use.</p>`;
   } else {
-     html += `<p style="margin-bottom: 12px; color: var(--text-secondary);">The displayed group is a ${label} linked set that is not in sync. The following table highlights the missing links in yellow. Off-axis links are shown in gray for context.</p>`;
+     html += `<p style="margin-bottom: 12px; color: var(--text-secondary);">These photos are linked as a <strong>${label}</strong> sequence. Directional links (l/r/u/d, etc.) are expected to be identical across every member. <strong>Yellow (+) entries</strong> show links that are present on some members but missing on others — clicking <em>Fix Omissions</em> will add them. Links shown in <span style="color:var(--text-tertiary)">gray</span> are outside this sequence type and will not be changed.</p>`;
   }
 
   html += `<table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 16px;">`;

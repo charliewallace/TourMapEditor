@@ -230,6 +230,7 @@ export class NavGrid {
             badge.style.background = 'rgba(88, 166, 255, 0.9)'; // Use var(--accent) dynamically
             badge.style.color = '#000';
             badge.textContent = `auto: ${targetId}`;
+            badge.title = `This link is automatically derived from compass headings — it is NOT stored in the record. The tour engine computes it the same way at playback, so it works correctly. To store it explicitly, drag the image from this cell back to the same slot.`;
           } else {
             badge.textContent = targetId;
           }
@@ -283,11 +284,17 @@ export class NavGrid {
       if (targetId) {
         targetSpan.textContent = isAuto ? ` auto: #${targetId}` : ` #${targetId}`;
         chip.classList.add('active');
-        if (isAuto) chip.style.borderColor = 'var(--accent)'; // Highlight auto chips
+        if (isAuto) {
+          chip.style.borderColor = 'var(--accent)'; // Highlight auto chips
+          chip.title = `Auto-derived link (not stored in record) — the tour engine computes this at playback. To make it explicit, drag the image to this chip.`;
+        } else {
+          chip.title = '';
+        }
       } else {
         targetSpan.textContent = '';
         chip.classList.remove('active');
         chip.style.borderColor = '';
+        chip.title = '';
       }
     });
 
