@@ -166,7 +166,28 @@ export class MapValidator {
         }
       }
 
-      // 7. q/w Shift + l/r Ambiguity Warning
+      // 7. Zoom State Constraint Check
+      // A zoom state (entry that is targeted by a 'z' link) should not have lateral panning or forward/turn links.
+      const isZoomState = tourMap.entries.some(e => e.type === 'link' && e.links['z'] === entry.id);
+      if (isZoomState) {
+        for (const cmd of ['l', 'r', 'f', 'a']) {
+          if (entry.links[cmd]) {
+            const isLoose = entry.unsupportedTokens && entry.unsupportedTokens.some(t => t === '*loose' || t === '+loose');
+            if (!isLoose) {
+              issues.push({
+                type: 'warning',
+                category: 'Zoom State Conflict',
+                message: `Entry #${entry.id} is a zoom destination but has a '${cmd}' (lateral pan) link. Left/Right panning is unsupported in zoom state. Add * to suppress.`,
+                lineIndex: index,
+                id: entry.id,
+                actionData: { type: 'zoom_lr_conflict', cmd }
+              });
+            }
+          }
+        }
+      }
+
+      // 8. q/w Shift + l/r Ambiguity Warning
       // If an entry is part of a shift cluster (has q or w links) but ALSO has
       // l or r links, flag it — in a zoomed/shifted context these likely conflict.
       // Suppress with *loose or +loose marker.
@@ -185,9 +206,10 @@ export class MapValidator {
         }
       }
 
-      // 8. Open Door Reference Check
+      // 9. Open Door Reference Check
       // If any non-door-mechanism link (not 'o' or 'c') points to the OPEN member of a
       // door pair, the editor should be prompted to change it to the CLOSED member.
+      // EXEMPTION: 'b' (back) is allowed to point to an open door, representing stepping backward through it.
       // Rationale: the nav-grid auto-redirects open→closed at runtime, but the stored
       // link target shows the open-door image in neighbor cells, which is misleading.
       // Suppressible with *loose or +loose.
@@ -195,8 +217,7 @@ export class MapValidator {
         entry.unsupportedTokens.some(t => t === '*loose' || t === '+loose');
       if (!isLooseEntry) {
         for (const cmd in entry.links) {
-          // Skip the door-mechanism commands — 'o' (go open) and 'c' (go closed) are correct
-          if (cmd === 'o' || cmd === 'c') continue;
+          if (cmd === 'o' || cmd === 'c' || cmd === 'b') continue;
           const targetId = entry.links[cmd];
           const target = tourMap.findById(targetId);
           if (!target) continue;

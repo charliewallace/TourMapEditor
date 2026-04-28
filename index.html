@@ -141,19 +141,42 @@
           </div>
         </div>
 
-        <!-- Secondary Links (chips) -->
+        <!-- Secondary Navigation (Sequences & Doors) -->
         <div id="secondary-links" class="secondary-links">
-          <div class="chip-group">
-            <button class="link-chip" data-command="o" title="Open door"><span class="chip-icon">🚪</span> Open<span class="chip-target"></span></button>
-            <button class="link-chip" data-command="c" title="Close door"><span class="chip-icon">🔒</span> Close<span class="chip-target"></span></button>
-            <button class="link-chip" data-command="n" title="Next in sequence"><span class="chip-icon">⏭</span> Next<span class="chip-target"></span></button>
-            <button class="link-chip" data-command="p" title="Previous in sequence"><span class="chip-icon">⏮</span> Prev<span class="chip-target"></span></button>
-            <button class="link-chip" data-command="q" title="Shift right"><span class="chip-icon">⇨</span> Shift R<span class="chip-target"></span></button>
-            <button class="link-chip" data-command="w" title="Shift left"><span class="chip-icon">⇦</span> Shift L<span class="chip-target"></span></button>
-            <button class="link-chip" data-command="e" title="Earlier in time"><span class="chip-icon">⏪</span> Earlier<span class="chip-target"></span></button>
-            <button class="link-chip" data-command="j" title="Later in time"><span class="chip-icon">⏩</span> Later<span class="chip-target"></span></button>
+          <div class="secondary-nav-grid">
+            <div class="secondary-cell" data-command="door" title="Door toggle">
+              <span class="cell-label">🚪 Door</span>
+              <div class="cell-image"><div class="cell-placeholder">Door</div></div>
+            </div>
+            <div class="secondary-cell" data-command="p" title="Previous in sequence">
+              <span class="cell-label">⏮ Prev</span>
+              <div class="cell-image"><div class="cell-placeholder">p</div></div>
+            </div>
+            <div class="secondary-cell" data-command="n" title="Next in sequence">
+              <span class="cell-label">⏭ Next</span>
+              <div class="cell-image"><div class="cell-placeholder">n</div></div>
+            </div>
+            <div class="secondary-cell" data-command="custom" title="User-defined custom link">
+              <span class="cell-label">🔗 Custom</span>
+              <div class="cell-image"><div class="cell-placeholder">custom</div></div>
+            </div>
+            <div class="secondary-cell" data-command="w" title="Shift left">
+              <span class="cell-label">⇦ Shift L</span>
+              <div class="cell-image"><div class="cell-placeholder">w</div></div>
+            </div>
+            <div class="secondary-cell" data-command="q" title="Shift right">
+              <span class="cell-label">⇨ Shift R</span>
+              <div class="cell-image"><div class="cell-placeholder">q</div></div>
+            </div>
+            <div class="secondary-cell" data-command="e" title="Earlier in time">
+              <span class="cell-label">⏪ Earlier</span>
+              <div class="cell-image"><div class="cell-placeholder">e</div></div>
+            </div>
+            <div class="secondary-cell" data-command="j" title="Later in time">
+              <span class="cell-label">⏩ Later</span>
+              <div class="cell-image"><div class="cell-placeholder">j</div></div>
+            </div>
           </div>
-          <div id="custom-link-container" class="chip-group" style="margin-top: 8px;"></div>
         </div>
 
         <!-- Door Helper Banner: shown contextually when center image is/could be a door -->

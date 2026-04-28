@@ -29,7 +29,7 @@ export class NavGrid {
     this.currentEntry = null;
     this.doorHelpBanner = document.getElementById('door-help-banner');
     this._setupCells();
-    this._setupChips();
+    this._setupSecondaryBoxes();
   }
 
   _setupCells() {
@@ -109,43 +109,137 @@ export class NavGrid {
     });
   }
 
-  _setupChips() {
-    const chips = document.querySelectorAll('#secondary-links .link-chip');
-    chips.forEach(chip => {
-      const cmd = chip.dataset.command;
+  _setupSecondaryBoxes() {
+    const cells = document.querySelectorAll('#secondary-links .secondary-cell');
+    cells.forEach(cell => {
+      const cmd = cell.dataset.command;
 
-      chip.addEventListener('click', () => {
+      // Click to navigate
+      cell.addEventListener('click', () => {
         if (this.currentEntry) {
-          const targetId = this.currentEntry.links[cmd] || (this.currentEntry.autoLinks && this.currentEntry.autoLinks[cmd]);
+          let targetId = null;
+          let effectiveCmd = cmd;
+          
+          if (cmd === 'door') {
+             const hasO = !!this.currentEntry.links['o'];
+             const hasC = !!this.currentEntry.links['c'];
+             if (hasO) { targetId = this.currentEntry.links['o']; effectiveCmd = 'o'; }
+             else if (hasC) { targetId = this.currentEntry.links['c']; effectiveCmd = 'c'; }
+          } else if (cmd === 'custom') {
+             targetId = this.currentEntry.userDefined?.targetId;
+             effectiveCmd = 'custom';
+          } else {
+             targetId = this.currentEntry.links[cmd] || (this.currentEntry.autoLinks && this.currentEntry.autoLinks[cmd]);
+          }
+
           if (targetId) {
-            this.onNavigate(targetId, cmd);
+            this.onNavigate(targetId, effectiveCmd);
           }
         }
       });
 
       // Drop target
-      chip.addEventListener('dragover', (e) => {
+      cell.addEventListener('dragover', (e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'link';
-        chip.classList.add('drop-target');
+        cell.classList.add('drop-target');
       });
-      chip.addEventListener('dragleave', () => {
-        chip.classList.remove('drop-target');
+      cell.addEventListener('dragleave', () => {
+        cell.classList.remove('drop-target');
       });
-      chip.addEventListener('drop', (e) => {
+      cell.addEventListener('drop', (e) => {
         e.preventDefault();
-        chip.classList.remove('drop-target');
+        cell.classList.remove('drop-target');
         const photoId = e.dataTransfer.getData('application/photo-id');
         const imageName = e.dataTransfer.getData('application/image-name');
-        if (photoId) {
-          this.onLinkChanged(cmd, photoId, imageName);
+        const sourceCmd = e.dataTransfer.getData('application/source-command');
+        
+        if (!photoId) return;
+        
+        // If dragged from another cell, clear the source link first
+        if (sourceCmd && sourceCmd !== cmd && this.currentEntry) {
+          this.onLinkChanged(sourceCmd, null);
+        }
+        
+        if (cmd === 'door') {
+           const hasO = !!this.currentEntry.links['o'];
+           const hasC = !!this.currentEntry.links['c'];
+           if (hasO) {
+              this.onLinkChanged('o', photoId, imageName);
+           } else if (hasC) {
+              this.onLinkChanged('c', photoId, imageName);
+           } else {
+              // Prompt user to designate current state
+              if (confirm("Is the currently displayed center photo a CLOSED door?\n\nOK = Center is CLOSED, dropped image is OPEN\nCancel = Center is OPEN, dropped image is CLOSED")) {
+                 this.onLinkChanged('o', photoId, imageName); // current is closed, dropped is open
+              } else {
+                 this.onLinkChanged('c', photoId, imageName); // current is open, dropped is closed
+              }
+           }
+        } else if (cmd === 'custom') {
+           let label = prompt("Enter a short label for this custom link (max 25 characters):", "Target");
+           if (label !== null) {
+              label = label.trim();
+              if (label.length === 0) {
+                 alert("Custom link label cannot be empty.");
+                 return;
+              }
+              if (label.length > 25) {
+                 label = label.substring(0, 25);
+              }
+              this.onLinkChanged('custom', photoId, imageName, label);
+           }
+        } else {
+           this.onLinkChanged(cmd, photoId, imageName);
         }
       });
 
-      chip.addEventListener('contextmenu', (e) => {
+      // Drag out
+      cell.addEventListener('dragstart', (e) => {
+        let targetId = null;
+        let sourceCmd = cmd;
+        if (cmd === 'door') {
+             const hasO = !!this.currentEntry.links['o'];
+             const hasC = !!this.currentEntry.links['c'];
+             if (hasO) { targetId = this.currentEntry.links['o']; sourceCmd = 'o'; }
+             else if (hasC) { targetId = this.currentEntry.links['c']; sourceCmd = 'c'; }
+        } else if (cmd === 'custom') {
+             targetId = this.currentEntry.userDefined?.targetId;
+             sourceCmd = 'custom';
+        } else {
+             targetId = this.currentEntry?.links[cmd];
+        }
+
+        if (targetId) {
+          e.dataTransfer.setData('application/photo-id', String(targetId));
+          e.dataTransfer.setData('application/source-command', sourceCmd);
+          e.dataTransfer.effectAllowed = 'link';
+          cell.classList.add('dragging');
+        } else {
+          e.preventDefault();
+        }
+      });
+      cell.addEventListener('dragend', () => cell.classList.remove('dragging'));
+
+      // Context menu
+      cell.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        if (this.currentEntry && this.currentEntry.links[cmd]) {
-          this._showContextMenu(e.clientX, e.clientY, cmd);
+        if (!this.currentEntry) return;
+        
+        let effectiveCmd = cmd;
+        let hasLink = false;
+        
+        if (cmd === 'door') {
+           if (this.currentEntry.links['o']) { effectiveCmd = 'o'; hasLink = true; }
+           else if (this.currentEntry.links['c']) { effectiveCmd = 'c'; hasLink = true; }
+        } else if (cmd === 'custom') {
+           hasLink = false; // No context menu for custom link yet
+        } else {
+           if (this.currentEntry.links[cmd]) hasLink = true;
+        }
+        
+        if (hasLink) {
+          this._showContextMenu(e.clientX, e.clientY, effectiveCmd);
         }
       });
     });
@@ -268,60 +362,93 @@ export class NavGrid {
       }
     });
 
-    // Update chips
-    const chips = document.querySelectorAll('#secondary-links .link-chip');
-    chips.forEach(chip => {
-      const cmd = chip.dataset.command;
-      const targetSpan = chip.querySelector('.chip-target');
+    // Update secondary boxes
+    const secondaryCells = document.querySelectorAll('#secondary-links .secondary-cell');
+    secondaryCells.forEach(cell => {
+      const cmd = cell.dataset.command;
+      const imageDiv = cell.querySelector('.cell-image');
+      const labelSpan = cell.querySelector('.cell-label');
       
-      let targetId = entry.links[cmd];
+      imageDiv.innerHTML = '';
+      cell.classList.remove('has-image');
+      cell.removeAttribute('data-door-state');
+      const oldBadge = cell.querySelector('.cell-id-badge');
+      if (oldBadge) oldBadge.remove();
+
+      let targetId = null;
       let isAuto = false;
-      if (!targetId && entry.autoLinks && entry.autoLinks[cmd]) {
-        targetId = entry.autoLinks[cmd];
-        isAuto = true;
+      let effectiveCmd = cmd;
+      
+      if (cmd === 'door') {
+         const hasO = !!entry.links['o'];
+         const hasC = !!entry.links['c'];
+         if (hasO) { 
+           targetId = entry.links['o']; 
+           effectiveCmd = 'o'; 
+           labelSpan.textContent = '🚪 Open';
+           cell.setAttribute('data-door-state', 'closed'); // we are closed, showing open target
+         } else if (hasC) { 
+           targetId = entry.links['c']; 
+           effectiveCmd = 'c'; 
+           labelSpan.textContent = '🔒 Close';
+           cell.setAttribute('data-door-state', 'open'); // we are open, showing closed target
+         } else {
+           labelSpan.textContent = '🚪 Door';
+         }
+      } else if (cmd === 'custom') {
+         if (entry.userDefined && entry.userDefined.targetId) {
+           targetId = entry.userDefined.targetId;
+           labelSpan.textContent = `🔗 ${entry.userDefined.label || 'Custom'}`;
+           effectiveCmd = 'custom';
+         } else {
+           labelSpan.textContent = '🔗 Custom';
+         }
+      } else {
+         targetId = entry.links[cmd];
+         if (!targetId && entry.autoLinks && entry.autoLinks[cmd]) {
+           targetId = entry.autoLinks[cmd];
+           isAuto = true;
+         }
       }
 
       if (targetId) {
-        targetSpan.textContent = isAuto ? ` auto: #${targetId}` : ` #${targetId}`;
-        chip.classList.add('active');
-        if (isAuto) {
-          chip.style.borderColor = 'var(--accent)'; // Highlight auto chips
-          chip.title = `Auto-derived link (not stored in record) — the tour engine computes this at playback. To make it explicit, drag the image to this chip.`;
+        const url = this.getImageUrl(targetId);
+        if (url) {
+          const img = document.createElement('img');
+          img.src = url;
+          img.alt = `Photo ${targetId}`;
+          img.loading = 'lazy';
+          imageDiv.appendChild(img);
+          cell.classList.add('has-image');
         } else {
-          chip.title = '';
+          imageDiv.innerHTML = `<div class="cell-placeholder">${targetId}</div>`;
+          cell.classList.add('has-image');
         }
+        
+        // ID badge
+        const badge = document.createElement('span');
+        badge.className = 'cell-id-badge';
+        if (isAuto) {
+          badge.style.background = 'rgba(88, 166, 255, 0.9)'; // Use var(--accent) dynamically
+          badge.style.color = '#000';
+          badge.textContent = `auto: ${targetId}`;
+          badge.title = `Auto-derived link (not stored in record) — the tour engine computes this at playback. To make it explicit, drag the image to this box.`;
+        } else {
+          badge.textContent = targetId;
+        }
+        cell.appendChild(badge);
       } else {
-        targetSpan.textContent = '';
-        chip.classList.remove('active');
-        chip.style.borderColor = '';
-        chip.title = '';
+        imageDiv.innerHTML = `<div class="cell-placeholder">${effectiveCmd}</div>`;
       }
     });
 
-    // Update User-Defined Custom Link (=(Label)Target)
-    const customContainer = document.getElementById('custom-link-container');
-    customContainer.innerHTML = '';
-    
-    if (entry.userDefined && entry.userDefined.targetId) {
-      const chip = document.createElement('button');
-      chip.className = 'link-chip active custom-link';
-      chip.style.borderStyle = 'dashed'; // Distinctive style for user links
-      
-      const labelText = entry.userDefined.label || 'Custom';
-      chip.innerHTML = `<span class="chip-icon">🔗</span> ${labelText}<span class="chip-target"> #${entry.userDefined.targetId}</span>`;
-      
-      chip.addEventListener('click', () => {
-        this.onNavigate(entry.userDefined.targetId, 'custom');
-      });
-      
-      customContainer.appendChild(chip);
-    }
-
-    // --- Door-Locked Cell Overlay ---
-    // When the current entry is the CLOSED member of a door pair, the Forward (f)
-    // and Zoom (z) cells should visually block drops and show a lock indicator.
+    // --- Restricted Cell Overlays (Doors & Zoom) ---
+    // When the current entry is the CLOSED member of a door pair, Forward/Zoom are blocked.
+    // When the current entry is a Zoom State, Left/Right/Forward/Turn are blocked.
     const DOOR_OPEN_ONLY_CMDS = ['f', 'z'];
+    const ZOOM_BLOCKED_CMDS = ['l', 'r', 'f', 'a'];
     const isClosed = this._isClosedDoorEntry(entry);
+    const isZoom = this._isZoomState(entry);
     const cells2 = document.querySelectorAll('#nav-grid .nav-cell');
     cells2.forEach(cell => {
       const cmd = cell.dataset.command;
@@ -337,6 +464,15 @@ export class NavGrid {
         overlay.innerHTML = `
           <span class="lock-icon">🔒</span>
           <span class="lock-msg">Not allowed<br>when door is closed</span>
+        `;
+        cell.appendChild(overlay);
+      } else if (isZoom && ZOOM_BLOCKED_CMDS.includes(cmd)) {
+        cell.classList.add('door-locked');
+        const overlay = document.createElement('div');
+        overlay.className = 'door-locked-overlay';
+        overlay.innerHTML = `
+          <span class="lock-icon">🚫</span>
+          <span class="lock-msg">Not allowed<br>in zoom state</span>
         `;
         cell.appendChild(overlay);
       }
@@ -358,10 +494,21 @@ export class NavGrid {
       const lockOverlay = cell.querySelector('.door-locked-overlay');
       if (lockOverlay) lockOverlay.remove();
     });
-    const chips = document.querySelectorAll('#secondary-links .link-chip');
-    chips.forEach(chip => {
-      chip.querySelector('.chip-target').textContent = '';
-      chip.classList.remove('active', 'guidance-pulse');
+    const secondaryCells = document.querySelectorAll('#secondary-links .secondary-cell');
+    secondaryCells.forEach(cell => {
+      const cmd = cell.dataset.command;
+      const imageDiv = cell.querySelector('.cell-image');
+      const labelSpan = cell.querySelector('.cell-label');
+      
+      imageDiv.innerHTML = `<div class="cell-placeholder">${cmd}</div>`;
+      cell.classList.remove('has-image');
+      cell.removeAttribute('data-door-state');
+      const badge = cell.querySelector('.cell-id-badge');
+      if (badge) badge.remove();
+      
+      // Reset specific labels
+      if (cmd === 'door') labelSpan.textContent = '🚪 Door';
+      if (cmd === 'custom') labelSpan.textContent = '🔗 Custom';
     });
     if (this.doorHelpBanner) this.doorHelpBanner.className = 'door-help-banner hidden';
   }
@@ -382,26 +529,21 @@ export class NavGrid {
   }
 
   /**
+   * Returns true if the given entry acts as a Zoom destination.
+   * @param {import('./dataModel.js').MapEntry|null} entry
+   * @returns {boolean}
+   */
+  _isZoomState(entry) {
+    if (!entry || entry.type !== 'link') return false;
+    return this.tourMap.entries.some(e => e.type === 'link' && e.links['z'] === entry.id);
+  }
+
+  /**
    * Updates the door-help-banner to match the current entry's door relationship.
-   *
-   * States:
-   *  - 'state-none'        : plain image, not yet part of any door pair
-   *    → show "Set as Closed Door" button
-   *  - 'state-needs-open'  : closed door with no linked open member yet
-   *    → pulsing hint to drag open-door image to the Open chip
-   *  - 'state-is-closed'   : closed door, fully linked
-   *    → informational amber label
-   *  - 'state-is-open'     : open door
-   *    → informational green label
    */
   _updateDoorBanner(entry) {
     const banner = this.doorHelpBanner;
     if (!banner) return;
-
-    // Stop any existing chip pulse
-    document.querySelectorAll('#secondary-links .link-chip').forEach(c =>
-      c.classList.remove('guidance-pulse')
-    );
 
     if (!entry || entry.type !== 'link') {
       banner.className = 'door-help-banner hidden';
@@ -412,28 +554,17 @@ export class NavGrid {
     const hasC = !!entry.links['c'];
 
     if (!hasO && !hasC) {
-      // Plain image — offer to designate as closed door
-      banner.className = 'door-help-banner state-none';
-      banner.innerHTML = `
-        <span style="opacity: 0.7;">🚪</span>
-        <span style="flex: 1;">Is this image a door?</span>
-        <button class="door-help-btn" id="btn-set-as-closed-door">🔒 Set as Closed Door</button>
-      `;
-      const btn = banner.querySelector('#btn-set-as-closed-door');
-      btn.addEventListener('click', () => {
-        if (this.onSetAsClosedDoor) this.onSetAsClosedDoor();
-        // Switch to "needs open" state immediately to guide the next step
-        this._showNeedsOpenState(entry);
-      });
+      // Hide banner, user interacts with Door Toggle box directly
+      banner.className = 'door-help-banner hidden';
 
     } else if (hasO) {
-      // Closed door — check whether the open sibling actually links back
+      // Closed door
       const openSibling = this.tourMap.findById(entry.links['o']);
       const fullyLinked = openSibling && openSibling.links['c'] === entry.id;
 
       if (!fullyLinked) {
-        // Orphaned 'o' link — treat as needs-open
-        this._showNeedsOpenState(entry);
+        // Hide pulse behavior, just keep hidden or show a minor warning
+        banner.className = 'door-help-banner hidden';
       } else {
         // Fully linked closed door
         banner.className = 'door-help-banner state-is-closed';
@@ -447,18 +578,8 @@ export class NavGrid {
     }
   }
 
-  /** Shows the animated "drag to Open chip" hint and pulses the Open chip. */
-  _showNeedsOpenState(entry) {
-    const banner = this.doorHelpBanner;
-    if (!banner) return;
-    banner.className = 'door-help-banner state-needs-open';
-    banner.innerHTML = `
-      <span>🚪 Drag the <strong>open-door image</strong> to the <strong>Open (🔓) chip</strong> below to complete this door pair.</span>
-    `;
-    // Pulse the Open chip
-    const openChip = document.querySelector('#secondary-links .link-chip[data-command="o"]');
-    if (openChip) openChip.classList.add('guidance-pulse');
-  }
+  // Remove the old pulsing hint method since we're not using chips anymore
+  _showNeedsOpenState(entry) {}
 
   _showContextMenu(x, y, cmd) {
     // Remove existing menu

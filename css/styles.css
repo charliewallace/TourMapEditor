@@ -538,53 +538,78 @@ html, body {
   border-style: dotted;
 }
 
-/* ----- Secondary Links (chips) ----- */
+/* ----- Secondary Navigation (Sequences & Doors) ----- */
 .secondary-links {
   padding: 8px 12px;
   border-top: 1px solid var(--border);
 }
 
-.chip-group {
-  display: flex;
-  flex-wrap: wrap;
+.secondary-nav-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 6px;
 }
 
-.link-chip {
-  display: inline-flex;
+.secondary-cell {
+  aspect-ratio: 4/3;
+  min-height: 70px;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 20px;
+  justify-content: center;
+  position: relative;
   cursor: pointer;
-  transition: all 0.15s;
-}
-.link-chip:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.link-chip.active {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--bg-active);
-}
-.link-chip.drop-target {
-  border-color: var(--success) !important;
-  background: rgba(63, 185, 80, 0.15) !important;
+  transition: all 0.2s ease;
+  background: var(--bg-primary);
+  overflow: hidden;
 }
 
-.chip-icon { font-size: 12px; }
-.chip-target {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  margin-left: 2px;
-  color: var(--accent);
+.secondary-cell:hover {
+  border-color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+}
+.secondary-cell.has-image {
+  border-style: solid;
+  border-color: var(--border);
+}
+.secondary-cell.has-image:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+.secondary-cell.drop-target {
+  border-color: var(--success) !important;
+  background: rgba(63, 185, 80, 0.1) !important;
+  border-style: solid !important;
+}
+
+/* Door box specific styling */
+.secondary-cell[data-door-state="open"] {
+  border-color: var(--success);
+}
+.secondary-cell[data-door-state="closed"] {
+  border-color: var(--warning);
+}
+
+/* Share label and badge styles with main nav grid */
+.secondary-cell .cell-label {
+  top: 4px;
+  left: 6px;
+  font-size: 9px;
+  padding: 1px 4px;
+}
+.secondary-cell .cell-id-badge {
+  bottom: 4px;
+  right: 6px;
+  font-size: 9px;
+}
+.secondary-cell .cell-placeholder {
+  font-size: 14px;
+}
+.secondary-cell.dragging {
+  opacity: 0.5;
+  border-style: dotted;
 }
 
 /* ----- Locale Editor (Compass Rose) ----- */

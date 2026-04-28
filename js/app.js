@@ -179,11 +179,7 @@ const navGrid = new NavGrid(
   onCycleHeading
 );
 navGrid.onPrimaryDrop = onPrimaryDrop;
-navGrid.onSetAsClosedDoor = () => {
-  // The banner already switches to the guidance state.
-  // Show a brief toast to reinforce what to do next.
-  showToast('🔒 Closed door designated — now drag the open-door image to the 🔓 Open chip to complete the pair.');
-};
+// navGrid.onSetAsClosedDoor removed
 
 const propertiesPanel = new PropertiesPanel(
   tourMap,
@@ -956,7 +952,7 @@ function onNavigateToPhoto(photoId, fromCommand) {
   runValidation();
 }
 
-function onLinkChanged(command, targetId, imageName) {
+function onLinkChanged(command, targetId, imageName, customLabel = null) {
   if (selectedIndex < 0) return;
   const entry = tourMap.entries[selectedIndex];
   if (!entry || entry.type !== 'link') return;
@@ -968,11 +964,26 @@ function onLinkChanged(command, targetId, imageName) {
   }
 
   if (targetId === null) {
-    delete entry.links[command];
+    if (command === 'custom') {
+      delete entry.userDefined;
+    } else {
+      delete entry.links[command];
+    }
   } else {
     // If command is 'o' or 'c', use the door linking helper
     if (command === 'o' || command === 'c') {
       linkAsDoor(entry.id, targetId, imageName, command === 'c');
+      return;
+    }
+    
+    // If command is 'custom', store in userDefined
+    if (command === 'custom') {
+      entry.userDefined = { label: customLabel || 'Custom', targetId: targetId };
+      entry.markModified();
+      markDirty();
+      navGrid.update(entry);
+      rawLineEditor.update(selectedIndex);
+      runValidation();
       return;
     }
 
@@ -996,17 +1007,7 @@ function onLinkChanged(command, targetId, imageName) {
     // 1. Simple Reverse Link
     const revCmd = OPPOSITE_CMDS[command];
     if (revCmd && !targetEntry.links[revCmd]) {
-      // Enforcement rule: Do not auto-assign a 'b' (back) link to a room entry if it came through a door ('f' from an Open door)
-      // Because we want the user to turn around and open it manually.
       let allowReverse = true;
-      if (revCmd === 'b' && command === 'f') {
-         const sourceGroups = tourMap.getSyncGroupsForNode(entry.id);
-         const sourceGroup = sourceGroups.find(g => g.type === 'door');
-         if (sourceGroup && sourceGroup.isOpen) {
-            allowReverse = false; // Block 'b' auto-assignment from open door's 'f'
-         }
-      }
-      
       if (allowReverse) {
         tourMap.updateLinkWithSync(targetEntry.id, revCmd, entry.id);
       }
@@ -1063,6 +1064,47 @@ function onLinkChanged(command, targetId, imageName) {
         }
       }
     }
+
+    // 3. Auto-Sync Shared Directional Links for New Sequence Members
+    // If a new member was just added to an np or ej sequence, propagate the shared
+    // directional links from the existing members to the new one (and vice versa)
+    // so it doesn't immediately flag a sync omission warning.
+    if (['n', 'p', 'e', 'j'].includes(command)) {
+      const groups = tourMap.getSyncGroupsForNode(entry.id);
+      for (const group of groups) {
+        if (group.type === 'sequence' && !group.isLoose && (group.subtype === 'np' || group.subtype === 'ej')) {
+          const sharedCmds = ['l', 'r', 'u', 'd', 'a', 'f'];
+          const unionLinks = {};
+          const allIds = [entry.id, ...group.siblings];
+          
+          // Collect union of all shared links across the sequence
+          allIds.forEach(id => {
+            const member = tourMap.findById(id);
+            if (member) {
+              sharedCmds.forEach(cmd => {
+                if (member.links[cmd] && !unionLinks[cmd]) {
+                  unionLinks[cmd] = member.links[cmd];
+                }
+              });
+            }
+          });
+          
+          // Apply union to all members directly
+          allIds.forEach(id => {
+            const member = tourMap.findById(id);
+            if (member) {
+              sharedCmds.forEach(cmd => {
+                if (unionLinks[cmd] && member.links[cmd] !== unionLinks[cmd]) {
+                  // updateLinkWithSync will also double-check and propagate, but starting 
+                  // it on the specific member guarantees it gets the link.
+                  tourMap.updateLinkWithSync(member.id, cmd, unionLinks[cmd]);
+                }
+              });
+            }
+          });
+        }
+      }
+    }
   }
 
   if (entry) entry.markModified();
@@ -1085,14 +1127,12 @@ function linkAsDoor(idA, idB, imageNameB = null, currentIsB = false) {
   const entryA = tourMap.findById(idA);
   let entryB = tourMap.findById(idB);
 
-  // If entryA has no locale, try to discover it:
-  // 1. Check linked neighbors first
-  // 2. Fall back to scanning backward in the entries array for the nearest locale header
+  // If entryA has no locale, try to discover it by checking lateral/vertical neighbors.
+  // We explicitly DO NOT check 'f' or 'b' neighbors, because doorways cross locale boundaries,
+  // and inheriting a locale across a doorway causes the outside to merge with the inside.
   if (entryA && (entryA.localeId === null || entryA.localeId === -1)) {
-    let foundLocale = false;
-    
-    // Pass 1: check linked neighbors
-    for (const cmd of ['l', 'r', 'f', 'b', 'u', 'd']) {
+    // Pass 1: check lateral/vertical neighbors
+    for (const cmd of ['l', 'r', 'u', 'd']) {
       const neighborId = entryA.links[cmd] || (entryA.autoLinks && entryA.autoLinks[cmd]);
       if (neighborId) {
         const neighbor = tourMap.findById(neighborId);
@@ -1100,26 +1140,12 @@ function linkAsDoor(idA, idB, imageNameB = null, currentIsB = false) {
           entryA.localeId = neighbor.localeId;
           entryA.localeDescription = neighbor.localeDescription;
           entryA.markModified();
-          foundLocale = true;
           break;
         }
       }
     }
-    
-    // Pass 2: scan backward for the nearest locale header
-    if (!foundLocale) {
-      const idxA = tourMap.entries.indexOf(entryA);
-      for (let i = idxA - 1; i >= 0; i--) {
-        const prev = tourMap.entries[i];
-        if (prev.type === 'locale' && prev.localeId !== null) {
-          entryA.localeId = prev.localeId;
-          entryA.localeDescription = prev.localeText || prev.localeDescription;
-          entryA.markModified();
-          foundLocale = true;
-          break;
-        }
-      }
-    }
+    // We no longer scan backward in the file. Newly dropped nodes at the end of the file 
+    // should remain orphans until explicitly grouped via "Create Locale from Views".
   }
 
   if (!entryB && idB) {
