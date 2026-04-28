@@ -12,12 +12,14 @@ export class LocaleEditor {
    * @param {Function} onNavigateToPhoto - callback(photoId) when user clicks a thumb
    * @param {Function} onHeadingAssigned - callback(photoId, heading)
    * @param {Function} getImageUrl - callback(photoId) => URL | null
+   * @param {Function} onConnectLocales - callback(sourceId, heading, targetLocaleId)
    */
-  constructor(tourMap, onNavigateToPhoto, onHeadingAssigned, getImageUrl) {
+  constructor(tourMap, onNavigateToPhoto, onHeadingAssigned, getImageUrl, onConnectLocales) {
     this.tourMap = tourMap;
     this.onNavigate = onNavigateToPhoto;
     this.onHeadingAssigned = onHeadingAssigned;
     this.getImageUrl = getImageUrl;
+    this.onConnectLocales = onConnectLocales;
     this.currentLocaleGroup = null;
 
     this._setupSlots();
@@ -184,6 +186,62 @@ export class LocaleEditor {
         }
       } else {
         slot.classList.remove('has-images');
+      }
+
+      // Manage Locale Link Input
+      const linkInput = slot.querySelector('.locale-link-input');
+      const clearBtn = slot.querySelector('.locale-link-clear');
+      
+      if (linkInput) {
+        if (entries && entries.length > 0) {
+          const e1 = entries[0];
+          linkInput.disabled = false;
+          let targetLocale = null;
+          if (e1.links['f']) {
+             const target = this.tourMap.findById(e1.links['f']);
+             if (target && target.localeId !== null && target.localeId !== localeGroup.localeId) {
+               targetLocale = target.localeId;
+             }
+          }
+          linkInput.value = targetLocale !== null ? targetLocale : '';
+          
+          if (clearBtn) {
+            if (targetLocale !== null) {
+              clearBtn.classList.remove('hidden');
+            } else {
+              clearBtn.classList.add('hidden');
+            }
+          }
+          
+          // Clone and replace to clear old listeners securely
+          const newLinkInput = linkInput.cloneNode(true);
+          linkInput.parentNode.replaceChild(newLinkInput, linkInput);
+          
+          const newClearBtn = clearBtn ? clearBtn.cloneNode(true) : null;
+          if (clearBtn && newClearBtn) clearBtn.parentNode.replaceChild(newClearBtn, clearBtn);
+          
+          newLinkInput.addEventListener('change', (e) => {
+             const val = e.target.value.trim();
+             const newLocId = val ? parseInt(val, 10) : null;
+             if (this.onConnectLocales) {
+                this.onConnectLocales(e1.id, heading, newLocId);
+             }
+          });
+
+          if (newClearBtn) {
+            newClearBtn.addEventListener('click', (e) => {
+               e.stopPropagation();
+               newLinkInput.value = '';
+               if (this.onConnectLocales) {
+                 this.onConnectLocales(e1.id, heading, null);
+               }
+            });
+          }
+        } else {
+          linkInput.disabled = true;
+          linkInput.value = '';
+          if (clearBtn) clearBtn.classList.add('hidden');
+        }
       }
     });
   }

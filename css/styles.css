@@ -664,9 +664,20 @@ html, body {
   border-color: var(--text-tertiary);
 }
 
-.slot-label {
+.slot-header {
   position: absolute;
   top: -10px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  z-index: 2;
+  pointer-events: none; /* Let clicks pass through empty space */
+}
+
+.slot-label {
   background: var(--bg-secondary);
   padding: 0 8px;
   font-size: 11px;
@@ -674,7 +685,63 @@ html, body {
   color: var(--text-secondary);
   border-radius: 10px;
   border: 1px solid var(--border);
-  z-index: 2;
+  pointer-events: auto;
+}
+
+.locale-link-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  pointer-events: auto;
+}
+
+.locale-link-input {
+  width: 50px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 1px 18px 1px 4px; /* extra right padding for the clear button */
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.locale-link-input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.locale-link-input:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  background: var(--bg-tertiary);
+}
+
+.locale-link-clear {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.locale-link-clear:hover {
+  color: var(--danger);
+  background: var(--bg-hover);
+}
+
+.locale-link-clear.hidden {
+  display: none !important;
 }
 
 .slot-images {

@@ -14,7 +14,7 @@ import { PropertiesPanel } from './propertiesPanel.js';
 import { RawLineEditor } from './rawLineEditor.js';
 import { TextView } from './textView.js';
 import { LocaleEditor } from './localeEditor.js';
-import { computeAutoLinks } from './autoLinker.js';
+import { computeAutoLinks, OPPOSITES, HEADING_MAP_16_TO_8 } from './autoLinker.js';
 import { MapValidator } from './mapValidator.js';
 import { Wizard } from './wizard.js';
 
@@ -190,7 +190,8 @@ const localeEditor = new LocaleEditor(
   tourMap,
   onNavigateToPhoto,
   onHeadingAssigned,
-  (photoId) => imageBrowser.getImageUrlById(photoId)
+  (photoId) => imageBrowser.getImageUrlById(photoId),
+  onConnectLocales
 );
 localeEditor.onLinkAsDoor = (idA, idB, currentIsB = false) => linkAsDoor(idA, idB, null, currentIsB);
 
@@ -1335,6 +1336,147 @@ function onHeadingAssigned(photoId, heading, imageName) {
   refreshCurrentSelection();
   lineList.render();
   runValidation();
+}
+
+const HEADING_DEGREES = {
+  'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5, 'SE': 135, 'SSE': 157.5,
+  'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5, 'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5
+};
+
+function getHeadingDiff(h1, h2) {
+  if (!h1 || !h2) return Infinity;
+  let diff = Math.abs(HEADING_DEGREES[h1] - HEADING_DEGREES[h2]);
+  if (diff > 180) diff = 360 - diff;
+  return diff;
+}
+
+function findBestTargetImage(targetLocaleGroup, targetHeading) {
+  let bestImg = null;
+  let minDiff = Infinity;
+  for (const entry of targetLocaleGroup.entries) {
+    if (!entry.heading) continue;
+    const diff = getHeadingDiff(targetHeading.toUpperCase(), entry.heading.toUpperCase());
+    if (diff < minDiff) {
+      minDiff = diff;
+      bestImg = entry;
+    } else if (diff === minDiff && bestImg) {
+      // Tie-breaker: Prefer closed door member over open door member
+      const bestIsOpenDoor = !!bestImg.links['c'];
+      const entryIsClosedDoor = !!entry.links['o'];
+      if (bestIsOpenDoor && entryIsClosedDoor) {
+        bestImg = entry;
+      }
+    }
+  }
+  if (minDiff > 90) return null; // Too far off
+  return bestImg;
+}
+
+function onConnectLocales(sourceId, sourceHeading, targetLocaleId) {
+  const sourceEntry = tourMap.findById(sourceId);
+  if (!sourceEntry) return;
+
+  // 1. Clear links if input is cleared
+  if (targetLocaleId === null) {
+    let targetLocaleIdToClear = null;
+    const oldTargetId = sourceEntry.links['f'];
+    if (oldTargetId) {
+      const oldTarget = tourMap.findById(oldTargetId);
+      if (oldTarget && oldTarget.localeId !== sourceEntry.localeId) {
+        targetLocaleIdToClear = oldTarget.localeId;
+        delete sourceEntry.links['f'];
+        delete oldTarget.links['b'];
+        oldTarget.markModified();
+      }
+    }
+    
+    // Also clear reciprocal if it exists, using the known target locale to ensure safety
+    // even if the reciprocal was a fuzzy match.
+    if (targetLocaleIdToClear !== null) {
+      const oppHeading = OPPOSITES[sourceHeading];
+      if (oppHeading) {
+        const sourceLocaleGroup = tourMap.getLocaleGroups().find(g => g.localeId === sourceEntry.localeId);
+        if (sourceLocaleGroup) {
+          const oppSource = findBestTargetImage(sourceLocaleGroup, oppHeading);
+          if (oppSource) {
+            const oldRecipTargetId = oppSource.links['f'];
+            if (oldRecipTargetId) {
+               const oldRecipTarget = tourMap.findById(oldRecipTargetId);
+               if (oldRecipTarget && oldRecipTarget.localeId === targetLocaleIdToClear) {
+                 delete oppSource.links['f'];
+                 delete oldRecipTarget.links['b'];
+                 oldRecipTarget.markModified();
+                 oppSource.markModified();
+               }
+            }
+          }
+        }
+      }
+    }
+    sourceEntry.markModified();
+    markDirty();
+    computeAutoLinks(tourMap);
+    lineList.render();
+    localeEditor.update(localeEditor.currentLocaleGroup, selectedIndex >= 0 ? tourMap.entries[selectedIndex].id : null);
+    showToast(`Removed cross-locale connections for ${sourceHeading}`);
+    return;
+  }
+
+  // 2. Connect to the target locale
+  const targetLocale = tourMap.getLocaleGroups().find(g => g.localeId === targetLocaleId);
+  if (!targetLocale) {
+    showToast(`Locale #${targetLocaleId} not found.`);
+    localeEditor.update(localeEditor.currentLocaleGroup, selectedIndex >= 0 ? tourMap.entries[selectedIndex].id : null);
+    return;
+  }
+
+  const hasHeadings = targetLocale.entries.some(e => e.heading);
+  if (!hasHeadings) {
+    showToast(`Locale #${targetLocaleId} has no assigned headings yet. Cannot connect.`);
+    localeEditor.update(localeEditor.currentLocaleGroup, selectedIndex >= 0 ? tourMap.entries[selectedIndex].id : null);
+    return;
+  }
+
+  let msgs = [];
+
+  // Primary Wiring: Source -> Target
+  const primaryTarget = findBestTargetImage(targetLocale, sourceHeading);
+  if (primaryTarget) {
+    sourceEntry.links['f'] = primaryTarget.id;
+    primaryTarget.links['b'] = sourceEntry.id;
+    sourceEntry.markModified();
+    primaryTarget.markModified();
+    msgs.push(`Wired ${sourceHeading} -> Loc #${targetLocaleId}`);
+  } else {
+    msgs.push(`No match for ${sourceHeading} in Loc #${targetLocaleId}`);
+  }
+
+  // Reciprocal Wiring: Target's Opposite -> Source's Opposite
+  const oppHeading = OPPOSITES[sourceHeading];
+  if (oppHeading) {
+    const oppTarget = findBestTargetImage(targetLocale, oppHeading);
+    if (oppTarget) {
+      const sourceLocaleGroup = tourMap.getLocaleGroups().find(g => g.localeId === sourceEntry.localeId);
+      const oppSource = findBestTargetImage(sourceLocaleGroup, oppHeading);
+      if (oppSource) {
+        oppTarget.links['f'] = oppSource.id;
+        oppSource.links['b'] = oppTarget.id;
+        oppTarget.markModified();
+        oppSource.markModified();
+        msgs.push(`Reciprocal ${oppHeading} -> Loc #${sourceEntry.localeId}`);
+      } else {
+        msgs.push(`Skipped reciprocal (no ${oppHeading} in source loc)`);
+      }
+    } else {
+      msgs.push(`Skipped reciprocal (no ${oppHeading} in Loc #${targetLocaleId})`);
+    }
+  }
+
+  markDirty();
+  computeAutoLinks(tourMap);
+  lineList.render();
+  localeEditor.update(localeEditor.currentLocaleGroup, selectedIndex >= 0 ? tourMap.entries[selectedIndex].id : null);
+  showToast(msgs.join(' | '));
 }
 
 function onRawLineEdited() {

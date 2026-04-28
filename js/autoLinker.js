@@ -9,7 +9,7 @@ import { HEADINGS } from './dataModel.js';
 export const HEADINGS_8 = ['N', 'NW', 'W', 'SW', 'S', 'SE', 'E', 'NE'];
 
 // Opposite heading mapping for "turn around" (a) links
-const OPPOSITES = {
+export const OPPOSITES = {
   'N': 'S', 'S': 'N',
   'NE': 'SW', 'SW': 'NE',
   'E': 'W', 'W': 'E',
@@ -17,7 +17,7 @@ const OPPOSITES = {
 };
 
 // Map 16-point headings to nearest 8-point headings
-const HEADING_MAP_16_TO_8 = {
+export const HEADING_MAP_16_TO_8 = {
   'N': 'N', 'NNE': 'N',
   'NE': 'NE', 'ENE': 'E',
   'E': 'E', 'ESE': 'E',
