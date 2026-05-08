@@ -381,6 +381,11 @@ function setMode(mode) {
     document.querySelectorAll('.view-only-prop').forEach(el => el.classList.add('hidden'));
   } else {
     // mode === 'view'
+    if (activeVirtualLocale) {
+      activeVirtualLocale = null;
+      virtualLocaleUndoStack = [];
+    }
+    
     localeEditorContainer.classList.add('hidden');
     navGridContainer.classList.remove('hidden');
     
@@ -2413,7 +2418,7 @@ function commitVirtualLocale(description) {
     m.localeDescription = localeEntry.localeText;
     
     // Erase cyclic links that are now handled by the locale container
-    const linksToErase = ['l', 'r'];
+    const linksToErase = ['l', 'r', 'a'];
     linksToErase.forEach(cmd => {
       if (m.links[cmd]) {
         const targetId = m.links[cmd];

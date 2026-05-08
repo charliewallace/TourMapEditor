@@ -185,8 +185,8 @@ export function discoverVirtualLocales(tourMap) {
     if (entry.localeId != null && entry.localeId > 0) continue;
     // Skip entries already assigned to a virtual locale
     if (visited.has(entry.id)) continue;
-    // Must have at least one l or r link to be part of a ring
-    if (!entry.links['l'] && !entry.links['r']) continue;
+    // Must have at least one l, r, or a link to be part of a ring
+    if (!entry.links['l'] && !entry.links['r'] && !entry.links['a']) continue;
 
     // ── Step 1: BFS via l/r links ──
     const ringMembers = [];
@@ -204,8 +204,8 @@ export function discoverVirtualLocales(tourMap) {
       visited.add(current.id);
       ringMembers.push(current);
 
-      // Follow l and r links
-      for (const cmd of ['l', 'r']) {
+      // Follow l, r, and a links
+      for (const cmd of ['l', 'r', 'a']) {
         const targetId = current.links[cmd];
         if (targetId != null && entryById.has(targetId) && !ringVisited.has(targetId)) {
           const target = entryById.get(targetId);
@@ -327,6 +327,15 @@ export function inferHeadingsForVirtualLocale(vl, tourMap) {
           changed = true;
         }
       }
+
+      // a link: target is 4 slots away (180 degrees)
+      if (entry.links['a']) {
+        const targetId = entry.links['a'];
+        if (memberIds.has(targetId) && !vl.inferredHeadings.has(targetId)) {
+          setInferredHeading(vl, targetId, headingAtOffset(myHeading, 4), 'propagation');
+          changed = true;
+        }
+      }
     }
   }
 
@@ -373,6 +382,13 @@ export function inferHeadingsForVirtualLocale(vl, tourMap) {
         const targetId = entry.links['r'];
         if (memberIds.has(targetId) && !vl.inferredHeadings.has(targetId)) {
           setInferredHeading(vl, targetId, headingAtOffset(myHeading, -1), 'propagation');
+          changed = true;
+        }
+      }
+      if (entry.links['a']) {
+        const targetId = entry.links['a'];
+        if (memberIds.has(targetId) && !vl.inferredHeadings.has(targetId)) {
+          setInferredHeading(vl, targetId, headingAtOffset(myHeading, 4), 'propagation');
           changed = true;
         }
       }
