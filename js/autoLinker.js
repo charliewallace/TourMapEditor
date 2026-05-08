@@ -3,30 +3,7 @@
  * for views within locales based on their compass headings.
  */
 
-import { HEADINGS } from './dataModel.js';
-
-// The 8 primary headings in counter-clockwise order
-export const HEADINGS_8 = ['N', 'NW', 'W', 'SW', 'S', 'SE', 'E', 'NE'];
-
-// Opposite heading mapping for "turn around" (a) links
-export const OPPOSITES = {
-  'N': 'S', 'S': 'N',
-  'NE': 'SW', 'SW': 'NE',
-  'E': 'W', 'W': 'E',
-  'SE': 'NW', 'NW': 'SE'
-};
-
-// Map 16-point headings to nearest 8-point headings
-export const HEADING_MAP_16_TO_8 = {
-  'N': 'N', 'NNE': 'N',
-  'NE': 'NE', 'ENE': 'E',
-  'E': 'E', 'ESE': 'E',
-  'SE': 'SE', 'SSE': 'S',
-  'S': 'S', 'SSW': 'S',
-  'SW': 'SW', 'WSW': 'W',
-  'W': 'W', 'WNW': 'W',
-  'NW': 'NW', 'NNW': 'N'
-};
+import { HEADINGS_8, OPPOSITES, HEADING_MAP_16_TO_8 } from './dataModel.js';
 
 /**
  * Computes and populates the `autoLinks` field for all link entries in the tour.
@@ -62,8 +39,30 @@ export function computeAutoLinks(tourMap) {
       headingGroups[primaryHeading].push(entry);
     }
 
-    // 3. Compute Left / Right links
+    // 3. Compute Left / Right links (with 2-member trail locale rule)
     if (presentHeadings.length >= 2) {
+
+      // 2-member trail locale: if the two headings are roughly opposite (≥ 135°),
+      // generate 'a' (turn-around) links instead of l/r. This handles the
+      // "looking forward and backward on a trail" scenario.
+      if (presentHeadings.length === 2) {
+        const idx0 = HEADINGS_8.indexOf(presentHeadings[0]);
+        const idx1 = HEADINGS_8.indexOf(presentHeadings[1]);
+        const dist = Math.min(Math.abs(idx0 - idx1), 8 - Math.abs(idx0 - idx1));
+        if (dist >= 3) {
+          // ≥ 135° apart — generate 'a' links instead of l/r
+          for (const heading of presentHeadings) {
+            const otherHeading = heading === presentHeadings[0] ? presentHeadings[1] : presentHeadings[0];
+            for (const entry of headingGroups[heading]) {
+              if (!entry.links['a']) {
+                entry.autoLinks['a'] = headingGroups[otherHeading][0].id;
+              }
+            }
+          }
+          continue; // skip l/r computation for this locale
+        }
+      }
+
       const occupiedIndices = new Set();
       presentHeadings.forEach(h => occupiedIndices.add(HEADINGS_8.indexOf(h)));
 

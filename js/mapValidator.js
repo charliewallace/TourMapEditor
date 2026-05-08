@@ -127,7 +127,8 @@ export class MapValidator {
           if (hasConflict || hasOmission) {
             const category = hasConflict ? 'Sync Conflict' : 'Sync Omission';
             const shortDesc = hasConflict ? 'Conflicting sequence link targets across views.' : 'Missing expected sequence link across views.';
-            const message = `${shortDesc}<br><span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); display: inline-block; margin-top: 4px;">[${index + 3}] ${entry.raw.substring(0, 60)}${entry.raw.length > 60 ? '...' : ''}</span>`;
+            const safeRaw = entry.raw || 'Unsaved edits...';
+            const message = `${shortDesc}<br><span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); display: inline-block; margin-top: 4px;">[${index + 3}] ${safeRaw.substring(0, 60)}${safeRaw.length > 60 ? '...' : ''}</span>`;
             
             // Add a custom property so the UI can detect this and offer actions
             issues.push({

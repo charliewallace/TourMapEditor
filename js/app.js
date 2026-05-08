@@ -4,7 +4,7 @@
  * Supports Chrome/Edge File System Access API with Firefox fallback.
  */
 
-import { TourMap, MapEntry, COMMAND_LABELS } from './dataModel.js';
+import { TourMap, MapEntry, COMMAND_LABELS, OPPOSITES, HEADING_MAP_16_TO_8 } from './dataModel.js';
 import { parseMapFile } from './mapFileParser.js';
 import { serializeMapFile } from './mapFileSerializer.js';
 import { LineList } from './lineList.js';
@@ -14,9 +14,10 @@ import { PropertiesPanel } from './propertiesPanel.js';
 import { RawLineEditor } from './rawLineEditor.js';
 import { TextView } from './textView.js';
 import { LocaleEditor } from './localeEditor.js';
-import { computeAutoLinks, OPPOSITES, HEADING_MAP_16_TO_8 } from './autoLinker.js';
+import { computeAutoLinks } from './autoLinker.js';
 import { MapValidator } from './mapValidator.js';
 import { Wizard } from './wizard.js';
+import { discoverVirtualLocales, inferHeadingsForVirtualLocale, propagateHeadingChange } from './virtualLocaleDiscovery.js';
 
 // ---- Global Constants for Bidirectional Links ----
 const OPPOSITE_CMDS = {
@@ -129,6 +130,46 @@ let baseDirHandle = null;  // For auto-archiving logic
 let selectedIndex = -1;
 let isDirty = false;
 
+// ---- Virtual Locale State ----
+let virtualLocalesCache = [];       // VirtualLocale[] — cached discovery results
+let virtualLocalesDirty = true;     // Recompute on next access
+let showVirtualLocales = false;     // Toggle state (always starts off)
+let activeVirtualLocale = null;     // VirtualLocale currently being formalized
+let virtualLocaleUndoStack = [];    // For single-step undo during formalization
+
+/**
+ * Recompute virtual locales from the current link graph.
+ * Runs discovery + heading inference for all results, then caches.
+ */
+function recomputeVirtualLocales() {
+  virtualLocalesCache = discoverVirtualLocales(tourMap);
+  for (const vl of virtualLocalesCache) {
+    inferHeadingsForVirtualLocale(vl, tourMap);
+  }
+  virtualLocalesDirty = false;
+}
+
+/**
+ * Get the cached virtual locales, recomputing if needed.
+ * @returns {import('./virtualLocaleDiscovery.js').VirtualLocale[]}
+ */
+function getVirtualLocales() {
+  if (virtualLocalesDirty) {
+    recomputeVirtualLocales();
+  }
+  return virtualLocalesCache;
+}
+
+/**
+ * Look up which virtual locale (if any) contains a given entry.
+ * @param {number} entryId  Photo ID
+ * @returns {import('./virtualLocaleDiscovery.js').VirtualLocale|null}
+ */
+function getVirtualLocaleForEntry(entryId) {
+  const locales = getVirtualLocales();
+  return locales.find(vl => vl.members.some(m => m.id === entryId)) || null;
+}
+
 // ---- Feature Detection ----
 const supportsFileSystemAccess = ('showOpenFilePicker' in window);
 
@@ -141,6 +182,7 @@ const btnAddLocale = document.getElementById('btn-add-locale');
 const btnAddLine = document.getElementById('btn-add-line');
 const btnDeleteLine = document.getElementById('btn-delete-line');
 const btnToggleMode = document.getElementById('btn-toggle-mode');
+const btnToggleVirtual = document.getElementById('btn-toggle-virtual');
 const btnTextToggle = document.getElementById('btn-text-view');
 const btnCheckout = document.getElementById('btn-checkout');
 const btnCloseCheckout = document.getElementById('btn-close-checkout');
@@ -152,6 +194,9 @@ const issueCountEl = document.getElementById('issue-count');
 const checkoutModal = document.getElementById('checkout-modal');
 const issueDetailsModal = document.getElementById('issue-details-modal');
 const checkoutResults = document.getElementById('checkout-results');
+const virtualLocaleDrawer = document.getElementById('virtual-locale-drawer');
+const virtualLocaleList = document.getElementById('virtual-locale-list');
+const virtualLocaleCount = document.getElementById('virtual-locale-count');
 const navGridContainer = document.getElementById('nav-grid-container');
 const localeEditorContainer = document.getElementById('locale-editor-container');
 const fileInputMap = document.getElementById('file-input-map');
@@ -249,13 +294,78 @@ btnToggleMode.addEventListener('click', () => {
   const entry = selectedIndex >= 0 ? tourMap.entries[selectedIndex] : null;
 
   if (btnToggleMode.dataset.state === 'add') {
-    // Delegate to onAddLocale() which BFS-sweeps all connected neighbors
+    // Delegate to onAddLocale() which will handle both virtual and raw views
     onAddLocale();
     
   } else {
     setMode(currentMode === 'view' ? 'locale' : 'view');
   }
 });
+
+btnToggleVirtual.addEventListener('click', () => {
+  showVirtualLocales = !showVirtualLocales;
+  if (showVirtualLocales) {
+    btnToggleVirtual.classList.add('btn-toggle-active');
+    virtualLocaleDrawer.classList.remove('hidden');
+    btnToggleVirtual.disabled = true; // Temporary disable while loading
+    setTimeout(() => {
+      updateVirtualLocaleUI();
+      btnToggleVirtual.disabled = false;
+    }, 10); // allow UI to paint
+  } else {
+    btnToggleVirtual.classList.remove('btn-toggle-active');
+    virtualLocaleDrawer.classList.add('hidden');
+    lineList.showVirtualLocales = false;
+    lineList.render();
+  }
+});
+
+function updateVirtualLocaleUI() {
+  if (!showVirtualLocales) return;
+  
+  const locales = getVirtualLocales();
+  
+  // Update LineList
+  lineList.virtualLocales = locales;
+  lineList.showVirtualLocales = true;
+  lineList.onFormalizeVirtualLocale = (vl) => {
+    previewVirtualLocale(vl);
+  };
+  lineList.render();
+  
+  // Update Drawer
+  virtualLocaleCount.textContent = locales.length;
+  virtualLocaleList.innerHTML = '';
+  
+  if (locales.length === 0) {
+    virtualLocaleList.innerHTML = '<div style="padding: 12px; text-align: center; color: var(--text-tertiary); font-size: 11px;">No auto locales found.</div>';
+    return;
+  }
+  
+  locales.forEach(vl => {
+    const row = document.createElement('div');
+    row.className = 'virtual-locale-summary-row';
+    
+    let headingsCount = 0;
+    vl.members.forEach(m => {
+      if (vl.inferredHeadings && vl.inferredHeadings.has(m.id)) headingsCount++;
+    });
+    
+    row.innerHTML = `
+      <div class="vl-info">
+        <span class="vl-id">Locale ${vl.id}</span>
+        <span class="vl-meta">${vl.members.length} members · ${headingsCount} headings inferred</span>
+      </div>
+      <button class="vl-btn-formalize">Formalize</button>
+    `;
+    
+    row.querySelector('.vl-btn-formalize').addEventListener('click', () => {
+      previewVirtualLocale(vl);
+    });
+    
+    virtualLocaleList.appendChild(row);
+  });
+}
 
 function setMode(mode) {
   currentMode = mode;
@@ -277,7 +387,7 @@ function setMode(mode) {
     // Show view-specific properties
     document.querySelectorAll('.view-only-prop').forEach(el => el.classList.remove('hidden'));
     
-    const isUnassignedLink = entry && entry.type === 'link' && entry.localeId === null;
+    const isUnassignedLink = entry && entry.type === 'link' && (entry.localeId === null || entry.localeId === -1);
     if (isUnassignedLink) {
       btnToggleMode.innerHTML = '<span class="btn-icon">➕</span> Create Locale from Views';
       btnToggleMode.dataset.state = 'add';
@@ -473,6 +583,17 @@ ${text}
 
 function onAddLocale() {
   if (!tourMap || !tourMap.entries) return;
+
+  if (selectedIndex >= 0) {
+    const currentEntry = tourMap.entries[selectedIndex];
+    if (currentEntry.type === 'link') {
+      const vl = getVirtualLocaleForEntry(currentEntry.id);
+      if (vl) {
+        previewVirtualLocale(vl);
+        return;
+      }
+    }
+  }
   
   const newLocaleId = tourMap.getNextLocaleId();
   const localeEntry = new MapEntry();
@@ -850,9 +971,9 @@ function onLineSelected(index) {
       return;
     } else {
       if (currentMode === 'view') {
-        const isUnassignedLink = entry.type === 'link' && entry.localeId === null;
+        const isUnassignedLink = entry.type === 'link' && (entry.localeId === null || entry.localeId === -1);
         if (isUnassignedLink) {
-          btnToggleMode.innerHTML = '<span class="btn-icon">➕</span> Create Locale from Views';
+          btnToggleMode.innerHTML = '<span class="btn-icon">➕</span> Create Locale from View';
           btnToggleMode.dataset.state = 'add';
         } else {
           btnToggleMode.innerHTML = '<span class="btn-icon">🧭</span> Locale Mode';
@@ -1270,7 +1391,37 @@ function onEntryPropertyChanged() {
 }
 
 function onHeadingAssigned(photoId, heading, imageName) {
-  let idx = tourMap.entries.findIndex(e => e.type === 'link' && e.id === photoId);
+  if (activeVirtualLocale) {
+    // --- VIRTUAL LOCALE MODE INTERCEPT ---
+    // Save state for undo
+    const stateMap = new Map();
+    for (const [id, hdg] of activeVirtualLocale.inferredHeadings.entries()) {
+      stateMap.set(id, hdg);
+    }
+    virtualLocaleUndoStack.push(stateMap);
+    
+    // Show undo button
+    document.getElementById('btn-vl-undo')?.classList.remove('hidden');
+    
+    // 2. Run propagation across the virtual locale
+    const { changed } = propagateHeadingChange(activeVirtualLocale, photoId, heading, tourMap);
+    
+    // 3. Update the preview
+    const pseudoLocaleGroup = buildPseudoLocaleGroup(activeVirtualLocale);
+    localeEditor.update(pseudoLocaleGroup, Number(photoId), true);
+    
+    // If all members now have headings, apply success class
+    const isComplete = activeVirtualLocale.members.every(m => activeVirtualLocale.inferredHeadings.has(m.id));
+    const btnFormalize = document.getElementById('btn-vl-formalize');
+    if (btnFormalize) {
+      if (isComplete) btnFormalize.classList.add('pulse-success');
+      else btnFormalize.classList.remove('pulse-success');
+    }
+    return;
+  }
+
+  // --- NORMAL MODE ---
+  let idx = tourMap.entries.findIndex(e => e.type === 'link' && e.id == photoId);
   const currentLocaleEntry = tourMap.entries[selectedIndex];
   let targetLocaleId = null;
 
@@ -1635,6 +1786,18 @@ function loadMapFile(text) {
 }
 
 function refreshCurrentSelection() {
+  if (activeVirtualLocale) {
+    const pseudoLocaleGroup = buildPseudoLocaleGroup(activeVirtualLocale);
+    // Determine active ID from selected index if it is a member
+    let activeId = null;
+    const selectedEntry = selectedIndex >= 0 ? tourMap.entries[selectedIndex] : null;
+    if (selectedEntry && activeVirtualLocale.members.some(m => m.id === selectedEntry.id)) {
+      activeId = selectedEntry.id;
+    }
+    localeEditor.update(pseudoLocaleGroup, activeId, true);
+    return;
+  }
+
   const index = selectedIndex;
   const entry = index >= 0 ? tourMap.entries[index] : null;
 
@@ -2039,6 +2202,11 @@ function showIssueDetails(issue, userResolvedConflicts = {}) {
 
 function markDirty() {
   isDirty = true;
+  virtualLocalesDirty = true; // Virtual locale cache needs recomputation
+  if (showVirtualLocales) {
+    // Debounce or call updateVirtualLocaleUI
+    setTimeout(() => updateVirtualLocaleUI(), 0);
+  }
   const title = tourMap.title ? `TourMap Editor — ${tourMap.title}` : 'TourMap Editor';
   document.title = '● ' + title;
 }
@@ -2143,3 +2311,145 @@ document.addEventListener('keydown', (e) => {
 
 // Initialize resizers
 initResizers();
+
+// ---- Virtual Locale Formalization Workflow ----
+
+function buildPseudoLocaleGroup(vl) {
+  // Create a fake locale group for the editor to render
+  return {
+    localeId: vl.id, // Negative ID marks it as virtual
+    description: '',
+    entries: vl.members.map(m => {
+      // Create a cloned entry so we don't accidentally mutate the real one
+      const clone = new MapEntry();
+      Object.assign(clone, m);
+      // Give it the inferred heading from the virtual locale
+      clone.inferredHeading = vl.inferredHeadings.get(m.id) || null;
+      return clone;
+    })
+  };
+}
+
+function previewVirtualLocale(vl) {
+  // If we're already formalizing one, discard it first to prevent tangling state
+  if (activeVirtualLocale && activeVirtualLocale.id !== vl.id) {
+    discardVirtualLocale();
+  }
+
+  activeVirtualLocale = vl;
+  virtualLocaleUndoStack = [];
+  
+  // Update UI mode
+  setMode('locale');
+  
+  // Set up editor callbacks
+  localeEditor.onVirtualFormalize = (description) => commitVirtualLocale(description);
+  localeEditor.onVirtualDiscard = () => discardVirtualLocale();
+  localeEditor.onVirtualUndo = () => {
+    if (virtualLocaleUndoStack.length > 0) {
+      activeVirtualLocale.inferredHeadings = virtualLocaleUndoStack.pop();
+      if (virtualLocaleUndoStack.length === 0) {
+        document.getElementById('btn-vl-undo')?.classList.add('hidden');
+      }
+      const pseudoLocaleGroup = buildPseudoLocaleGroup(activeVirtualLocale);
+      localeEditor.update(pseudoLocaleGroup, null, true);
+      
+      const isComplete = activeVirtualLocale.members.every(m => activeVirtualLocale.inferredHeadings.has(m.id));
+      const btnFormalize = document.getElementById('btn-vl-formalize');
+      if (btnFormalize) {
+        if (isComplete) btnFormalize.classList.add('pulse-success');
+        else btnFormalize.classList.remove('pulse-success');
+      }
+    }
+  };
+
+  // Check if we need to seed
+  if (vl.inferredHeadings.size === 0) {
+    // Show banner text prompting for initial heading
+    document.getElementById('vl-description-input').placeholder = "Drag any image to a heading to begin...";
+  } else {
+    document.getElementById('vl-description-input').placeholder = "Enter locale description...";
+  }
+  
+  document.getElementById('btn-vl-undo')?.classList.add('hidden');
+  document.getElementById('btn-vl-formalize')?.classList.remove('pulse-success');
+  document.getElementById('vl-description-input').value = '';
+
+  const pseudoLocaleGroup = buildPseudoLocaleGroup(activeVirtualLocale);
+  localeEditor.update(pseudoLocaleGroup, null, true);
+}
+
+function discardVirtualLocale() {
+  activeVirtualLocale = null;
+  virtualLocaleUndoStack = [];
+  // Return to view mode
+  setMode('view');
+}
+
+function commitVirtualLocale(description) {
+  if (!activeVirtualLocale) return;
+  const vl = activeVirtualLocale;
+  
+  // 1. Validate complete heading coverage
+  const unassigned = vl.members.filter(m => !vl.inferredHeadings.has(m.id));
+  if (unassigned.length > 0) {
+    showToast(`Cannot formalize: ${unassigned.length} views still need headings.`);
+    return;
+  }
+  
+  // 2. Allocate new ID
+  const newLocaleId = tourMap.getNextLocaleId();
+  
+  // 3. Create Locale Entry
+  const localeEntry = new MapEntry();
+  localeEntry.type = 'locale';
+  localeEntry.localeId = newLocaleId;
+  localeEntry.localeText = description || `Locale ${newLocaleId}`;
+  
+  // 4. Update member entries
+  vl.members.forEach(m => {
+    m.localeId = newLocaleId;
+    m.heading = vl.inferredHeadings.get(m.id);
+    m.localeDescription = localeEntry.localeText;
+    
+    // Erase cyclic links that are now handled by the locale container
+    const linksToErase = ['l', 'r'];
+    linksToErase.forEach(cmd => {
+      if (m.links[cmd]) {
+        const targetId = m.links[cmd];
+        if (vl.members.some(member => member.id === targetId)) {
+           delete m.links[cmd];
+        }
+      }
+    });
+    
+    m.raw = null; // Forces regeneration of the line during serialization
+  });
+  
+  // 5. Append locale entry to map
+  // To keep it clean, insert the locale definition line right before its first member
+  const firstMemberIndex = tourMap.entries.findIndex(e => e.id === vl.members[0].id);
+  if (firstMemberIndex !== -1) {
+    tourMap.entries.splice(firstMemberIndex, 0, localeEntry);
+  } else {
+    tourMap.entries.push(localeEntry);
+  }
+  
+  // 6. Clean up state
+  activeVirtualLocale = null;
+  virtualLocaleUndoStack = [];
+  
+  // 7. Refresh UI
+  markDirty();
+  computeAutoLinks(tourMap);
+  lineList.render();
+  
+  // Select the newly created locale
+  const newIdx = tourMap.entries.findIndex(e => e === localeEntry);
+  if (newIdx !== -1) {
+    lineList.select(newIdx);
+    lineList.scrollToIndex(newIdx);
+  }
+  
+  showToast(`Formalized Locale #${newLocaleId}`);
+}

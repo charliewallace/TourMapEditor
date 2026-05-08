@@ -66,6 +66,9 @@
         <span class="btn-icon">📝</span> Text View
       </button>
       <div class="toolbar-divider"></div>
+      <button id="btn-toggle-virtual" class="toolbar-btn" title="Show Auto Locales">
+        <span class="btn-icon">🔍</span> Auto Locales
+      </button>
       <button id="btn-toggle-mode" class="toolbar-btn" title="Toggle Locale Editor / View Editor" disabled>
         <span class="btn-icon">🧭</span> Locale Mode
       </button>
@@ -83,6 +86,14 @@
       </div>
       <div id="line-list" class="line-list-container">
         <div class="empty-state">Open a map file to begin</div>
+      </div>
+      <!-- Virtual Locales Summary Drawer -->
+      <div id="virtual-locale-drawer" class="virtual-locale-drawer hidden">
+        <div class="drawer-header">
+          <span>Auto Locales</span>
+          <span id="virtual-locale-count" class="badge">0</span>
+        </div>
+        <div id="virtual-locale-list" class="virtual-locale-list"></div>
       </div>
     </aside>
 
@@ -187,7 +198,17 @@
       <div id="locale-editor-container" class="panel hidden">
         <div class="panel-header">
           <h3 id="locale-editor-title">Locale Editor</h3>
-          <span class="subtitle">Drag images to headings</span>
+          <span class="subtitle" id="locale-editor-subtitle">Drag images to headings</span>
+        </div>
+        
+        <!-- Virtual Locale Banner (Phase 3) -->
+        <div id="virtual-locale-banner" class="virtual-locale-banner hidden">
+           <input type="text" id="vl-description-input" class="vl-description-input" placeholder="Enter locale description...">
+           <div class="vl-actions">
+              <button id="btn-vl-undo" class="toolbar-btn hidden" title="Undo last drag"><span class="btn-icon">↩️</span> Undo</button>
+              <button id="btn-vl-discard" class="toolbar-btn warning">Discard</button>
+              <button id="btn-vl-formalize" class="toolbar-btn success">Formalize</button>
+           </div>
         </div>
         <div id="locale-compass" class="locale-compass">
           <!-- The 8 headings -->

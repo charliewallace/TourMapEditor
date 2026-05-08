@@ -17,6 +17,11 @@ export class LineList {
     this.onSelect = onSelect;
     this.selectedIndex = -1;
     this.filterText = '';
+    
+    // Virtual Locales State
+    this.virtualLocales = [];
+    this.showVirtualLocales = false;
+    this.onFormalizeVirtualLocale = null; // callback(virtualLocale)
 
     // Search
     const searchInput = document.getElementById('line-search');
@@ -51,9 +56,31 @@ export class LineList {
       item.draggable = true;
       item.dataset.index = index;
 
+      let vlBadge = null;
+      if (this.showVirtualLocales && entry.type === 'link') {
+        const vl = this.virtualLocales.find(v => v.members.some(m => m.id === entry.id));
+        if (vl) {
+          item.classList.add('virtual-locale-member');
+          vlBadge = document.createElement('span');
+          vlBadge.className = 'line-badge virtual-locale-badge';
+          vlBadge.textContent = `$${vl.id}`;
+          vlBadge.title = `Virtual Locale ${vl.id} — Click to formalize`;
+          vlBadge.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (this.onFormalizeVirtualLocale) {
+              this.onFormalizeVirtualLocale(vl);
+            }
+          });
+        }
+      }
+
       const badge = document.createElement('span');
       badge.className = 'line-badge';
       badge.textContent = this._getBadge(entry);
+      
+      if (vlBadge) {
+        item.appendChild(vlBadge);
+      }
       item.appendChild(badge);
 
       const labelSpan = document.createElement('span');

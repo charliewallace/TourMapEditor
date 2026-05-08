@@ -37,6 +37,29 @@ export const HEADINGS = [
   'S', 'SSE', 'SE', 'ESE', 'E', 'ENE', 'NE', 'NNE'
 ];
 
+// 8-point compass headings in counterclockwise order (matches HEADINGS ordering)
+export const HEADINGS_8 = ['N', 'NW', 'W', 'SW', 'S', 'SE', 'E', 'NE'];
+
+// Opposite heading mapping for "turn around" (a) links
+export const OPPOSITES = {
+  'N': 'S', 'S': 'N',
+  'NE': 'SW', 'SW': 'NE',
+  'E': 'W', 'W': 'E',
+  'SE': 'NW', 'NW': 'SE'
+};
+
+// Map 16-point headings to nearest 8-point heading
+export const HEADING_MAP_16_TO_8 = {
+  'N': 'N', 'NNE': 'N',
+  'NE': 'NE', 'ENE': 'E',
+  'E': 'E', 'ESE': 'E',
+  'SE': 'SE', 'SSE': 'S',
+  'S': 'S', 'SSW': 'S',
+  'SW': 'SW', 'WSW': 'W',
+  'W': 'W', 'WNW': 'W',
+  'NW': 'NW', 'NNW': 'N'
+};
+
 /**
  * A single entry in the map file.
  */
@@ -101,6 +124,9 @@ export class MapEntry {
      * @type {Object<string, number>}
      */
     this.autoLinks = {};
+
+    /** @type {string|null} Inferred compass heading — not serialized, used during virtual locale formalization */
+    this.inferredHeading = null;
 
     /** @type {string[]} Tokens that don't match known commands */
     this.unsupportedTokens = [];

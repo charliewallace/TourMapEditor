@@ -4,7 +4,8 @@
  * assign headings to views.
  */
 
-import { HEADINGS_8, computeAutoLinks } from './autoLinker.js';
+import { HEADINGS_8 } from './dataModel.js';
+import { computeAutoLinks } from './autoLinker.js';
 
 export class LocaleEditor {
   /**
@@ -21,8 +22,16 @@ export class LocaleEditor {
     this.getImageUrl = getImageUrl;
     this.onConnectLocales = onConnectLocales;
     this.currentLocaleGroup = null;
+    this.isVirtual = false;
+    this.pileIndex = 0;
+    
+    // Virtual locale specific callbacks (assigned from outside)
+    this.onVirtualFormalize = null;
+    this.onVirtualDiscard = null;
+    this.onVirtualUndo = null;
 
     this._setupSlots();
+    this._setupVirtualBanner();
     // Auto-links are now computed automatically on mutations via app.js
   }
 
@@ -60,15 +69,36 @@ export class LocaleEditor {
     });
   }
 
+  _setupVirtualBanner() {
+    document.getElementById('btn-vl-formalize')?.addEventListener('click', () => {
+      const desc = document.getElementById('vl-description-input')?.value.trim();
+      if (this.onVirtualFormalize) this.onVirtualFormalize(desc);
+    });
+    document.getElementById('btn-vl-discard')?.addEventListener('click', () => {
+      if (this.onVirtualDiscard) this.onVirtualDiscard();
+    });
+    document.getElementById('btn-vl-undo')?.addEventListener('click', () => {
+      if (this.onVirtualUndo) this.onVirtualUndo();
+    });
+  }
+
   /**
    * @param {{ localeId: number, description: string, entries: import('./dataModel.js').MapEntry[] }|null} localeGroup
    * @param {number|null} selectedId
+   * @param {boolean} isVirtual
    */
-  update(localeGroup, selectedId = undefined) {
+  update(localeGroup, selectedId = undefined, isVirtual = false) {
     if (selectedId !== undefined) {
       this.selectedId = selectedId;
     }
+    
+    // Reset pile index if switching locales
+    if (!this.currentLocaleGroup || !localeGroup || this.currentLocaleGroup.localeId !== localeGroup.localeId) {
+      this.pileIndex = 0;
+    }
+    
     this.currentLocaleGroup = localeGroup;
+    this.isVirtual = isVirtual;
     const activeId = this.selectedId || null;
     
     // Title & Subtitle updates
@@ -92,22 +122,39 @@ export class LocaleEditor {
       return;
     }
 
-    titleEl.textContent = `Locale Editor — #${localeGroup.localeId}`;
+    titleEl.textContent = isVirtual ? `Formalize Virtual Locale — VL-${Math.abs(localeGroup.localeId)}` : `Locale Editor — #${localeGroup.localeId}`;
     nameEl.textContent = localeGroup.description || '(No description)';
-    idEl.textContent = `#${localeGroup.localeId}`;
+    idEl.textContent = isVirtual ? `VL-${Math.abs(localeGroup.localeId)}` : `#${localeGroup.localeId}`;
+
+    const container = document.getElementById('locale-editor-container');
+    const subtitle = document.getElementById('locale-editor-subtitle');
+    const banner = document.getElementById('virtual-locale-banner');
+    
+    if (isVirtual) {
+      container.classList.add('virtual-locale-mode');
+      subtitle.classList.add('hidden');
+      banner.classList.remove('hidden');
+    } else {
+      container.classList.remove('virtual-locale-mode');
+      subtitle.classList.remove('hidden');
+      banner.classList.add('hidden');
+    }
 
     // Map the 16 compass headings to our 8 slots for display
     const mappedEntries = { N:[], NW:[], W:[], SW:[], S:[], SE:[], E:[], NE:[] };
 
     localeGroup.entries.forEach(entry => {
       let h = 'none'; // Default to 'none' if no heading or not a link
-      if (entry.type === 'link' && entry.heading) {
-        // Find nearest 8-point equivalent
-        h = entry.heading.toUpperCase();
-        if (h === 'NNE' || h === 'NNW') h = 'N';
-        else if (h === 'ENE' || h === 'ESE') h = 'E';
-        else if (h === 'SSE' || h === 'SSW') h = 'S';
-        else if (h === 'WSW' || h === 'WNW') h = 'W';
+      if (entry.type === 'link') {
+        const rawHeading = this.isVirtual ? (entry.inferredHeading || entry.heading) : entry.heading;
+        if (rawHeading) {
+          // Find nearest 8-point equivalent
+          h = rawHeading.toUpperCase();
+          if (h === 'NNE' || h === 'NNW') h = 'N';
+          else if (h === 'ENE' || h === 'ESE') h = 'E';
+          else if (h === 'SSE' || h === 'SSW') h = 'S';
+          else if (h === 'WSW' || h === 'WNW') h = 'W';
+        }
       }
       
       if (!mappedEntries[h]) mappedEntries[h] = []; // Ensure it's initialized
@@ -136,21 +183,80 @@ export class LocaleEditor {
       hint.textContent = 'Please drag to compass heading';
       stackArea.appendChild(hint);
       
+      const pileContainer = document.createElement('div');
+      pileContainer.style.display = 'flex';
+      pileContainer.style.alignItems = 'center';
+      pileContainer.style.gap = '20px';
+
+      // Left Arrow
+      const btnPrev = document.createElement('button');
+      btnPrev.className = 'unassigned-nav-btn';
+      btnPrev.innerHTML = '◀';
+      btnPrev.disabled = this.pileIndex === 0;
+      btnPrev.addEventListener('click', () => {
+        if (this.pileIndex > 0) {
+          this.pileIndex--;
+          this.update(this.currentLocaleGroup, this.selectedId, this.isVirtual);
+        }
+      });
+      pileContainer.appendChild(btnPrev);
+      
+      // The Pile
       const pile = document.createElement('div');
       pile.className = 'unassigned-pile';
+      pile.style.position = 'relative';
+      pile.style.width = '160px'; // fixed width to hold absolute children
+      pile.style.height = '120px';
       
-      unmapped.forEach((entry, i) => {
+      // Render the current item and up to 3 underneath it for visual depth
+      const maxDepth = Math.min(3, unmapped.length - this.pileIndex);
+      for (let d = maxDepth - 1; d >= 0; d--) {
+        const itemIndex = this.pileIndex + d;
+        const entry = unmapped[itemIndex];
         const wrapper = this._createThumbWrapper(entry, activeId, 'none');
-        // Apply a leaning-stack offset so each photo peeks out
-        const angle = (i - Math.floor(unmapped.length / 2)) * 4; // slight rotation
-        const xShift = i * 12;  // horizontal stagger
-        const yShift = i * 4;   // slight vertical stagger
-        wrapper.style.transform = `rotate(${angle}deg) translate(${xShift}px, ${yShift}px)`;
-        wrapper.style.zIndex = i + 1;
+        
+        wrapper.style.position = 'absolute';
+        wrapper.style.top = '0';
+        wrapper.style.left = '10px';
+        
+        // Stagger
+        const scale = 1 - (d * 0.05);
+        const yOffset = d * 8;
+        wrapper.style.transform = `scale(${scale}) translateY(${yOffset}px)`;
+        wrapper.style.zIndex = maxDepth - d; // Top item has highest z-index
+        wrapper.style.opacity = d === maxDepth - 1 && d > 0 ? '0.5' : '1';
+        
+        if (d > 0) {
+          // Prevent dragging lower items
+          wrapper.removeAttribute('draggable');
+          wrapper.style.pointerEvents = 'none';
+        }
+        
         pile.appendChild(wrapper);
-      });
+      }
+      pileContainer.appendChild(pile);
       
-      stackArea.appendChild(pile);
+      // Right Arrow
+      const btnNext = document.createElement('button');
+      btnNext.className = 'unassigned-nav-btn';
+      btnNext.innerHTML = '▶';
+      btnNext.disabled = this.pileIndex >= unmapped.length - 1;
+      btnNext.addEventListener('click', () => {
+        if (this.pileIndex < unmapped.length - 1) {
+          this.pileIndex++;
+          this.update(this.currentLocaleGroup, this.selectedId, this.isVirtual);
+        }
+      });
+      pileContainer.appendChild(btnNext);
+      
+      stackArea.appendChild(pileContainer);
+      
+      // Counter
+      const counter = document.createElement('div');
+      counter.className = 'unassigned-nav-counter';
+      counter.textContent = `${this.pileIndex + 1} of ${unmapped.length}`;
+      stackArea.appendChild(counter);
+
     } else {
       stackArea.classList.add('hidden');
     }
@@ -165,15 +271,58 @@ export class LocaleEditor {
       const entries = mappedEntries[heading];
       if (entries && entries.length > 0) {
         slot.classList.add('has-images');
-        entries.forEach(entry => {
-          const wrapper = this._createThumbWrapper(entry, activeId, heading);
+        
+        // Sort topologically based on exact u/d links
+        entries.sort((a, b) => {
+           if (a.links['u'] == b.id || b.links['d'] == a.id) return 1; // a is below b
+           if (a.links['d'] == b.id || b.links['u'] == a.id) return -1; // a is above b
+           return 0;
+        });
+
+        // Determine Level image based on incoming/outgoing links across the tour
+        let levelIdx = 0;
+        let bestScore = -1;
+        
+        entries.forEach((e, idx) => {
+            let score = 0;
+            // 1. Incoming 'f' or 'b' is the strongest indicator of a base level image
+            const incomingFB = this.tourMap.entries.some(other => other.links['f'] == e.id || other.links['b'] == e.id);
+            if (incomingFB) score += 100;
+            
+            // 2. Incoming 'l' or 'r' (part of the horizontal ring)
+            const incomingLR = this.tourMap.entries.some(other => other.links['l'] == e.id || other.links['r'] == e.id);
+            if (incomingLR) score += 50;
+            
+            // 3. Outgoing horizontal links
+            if (e.links['l'] || e.links['r']) score += 10;
+            
+            // 4. Outgoing forward/back links
+            if (e.links['f'] || e.links['b']) score += 5;
+
+            // 5. If it's the middle of a 3-image stack (has both u and d to other members)
+            const hasU = entries.some(other => other.id == e.links['u']);
+            const hasD = entries.some(other => other.id == e.links['d']);
+            if (hasU && hasD) score += 200; // Middle of a 3-stack is definitely the level image
+            
+            if (score > bestScore) {
+                bestScore = score;
+                levelIdx = idx;
+            }
+        });
+
+        entries.forEach((entry, idx) => {
+          const isUp = idx < levelIdx;
+          const isDown = idx > levelIdx;
+          const wrapper = this._createThumbWrapper(entry, activeId, heading, isUp, isDown);
           imagesContainer.appendChild(wrapper);
         });
 
         // If exactly 2 images, add a "Link as Door" helper button
         if (entries.length === 2) {
           const [e1, e2] = entries;
-          if (!e1.links['o'] && !e1.links['c'] && !e2.links['o'] && !e2.links['c']) {
+          const isDoorLinked = e1.links['o'] || e1.links['c'] || e2.links['o'] || e2.links['c'];
+          const isVertLinked = e1.links['u'] == e2.id || e1.links['d'] == e2.id || e2.links['u'] == e1.id || e2.links['d'] == e1.id;
+          if (!isDoorLinked && !isVertLinked) {
             const linkBtn = document.createElement('button');
             linkBtn.className = 'link-door-helper';
             linkBtn.innerHTML = '🔗 Link as Door';
@@ -246,7 +395,7 @@ export class LocaleEditor {
     });
   }
 
-  _createThumbWrapper(entry, activeId, heading) {
+  _createThumbWrapper(entry, activeId, heading, isUp = false, isDown = false) {
     const url = this.getImageUrl(entry.id);
     
     const wrapper = document.createElement('div');
@@ -303,11 +452,20 @@ export class LocaleEditor {
       badge.className = 'slot-badge closed-badge';
       badge.textContent = 'C';
       wrapper.appendChild(badge);
-    }
-    if (entry.links['c']) {
+    } else if (entry.links['c']) {
       const badge = document.createElement('span');
       badge.className = 'slot-badge open-badge';
       badge.textContent = 'O';
+      wrapper.appendChild(badge);
+    } else if (isDown) {
+      const badge = document.createElement('span');
+      badge.className = 'slot-badge down-badge';
+      badge.textContent = 'D';
+      wrapper.appendChild(badge);
+    } else if (isUp) {
+      const badge = document.createElement('span');
+      badge.className = 'slot-badge up-badge';
+      badge.textContent = 'U';
       wrapper.appendChild(badge);
     }
 
