@@ -330,35 +330,31 @@ export class TourMap {
    * @returns {{ localeId: number, description: string, entries: MapEntry[] }[]}
    */
   getLocaleGroups() {
-    const groups = [];
-    let currentGroup = null;
+    const groupsMap = new Map();
 
     for (const entry of this.entries) {
       if (entry.type === 'locale') {
-        currentGroup = {
-          localeId: entry.localeId,
-          description: entry.localeText || '',
-          entries: []
-        };
-        groups.push(currentGroup);
-      } else if (entry.type === 'link') {
-        if (!currentGroup && entry.localeId !== null && entry.localeId !== -1) {
-           // Link has a locale ID but we didn't see the header, create one
-           currentGroup = {
-             localeId: entry.localeId,
-             description: entry.localeDescription || '',
-             entries: []
-           };
-           groups.push(currentGroup);
+        if (!groupsMap.has(entry.localeId)) {
+          groupsMap.set(entry.localeId, {
+            localeId: entry.localeId,
+            description: entry.localeText || '',
+            entries: []
+          });
+        } else {
+          groupsMap.get(entry.localeId).description = entry.localeText || '';
         }
-        if (currentGroup && currentGroup.localeId === entry.localeId) {
-          currentGroup.entries.push(entry);
-        } else if (entry.localeId !== null && entry.localeId !== -1) {
-          console.warn(`[getLocaleGroups] Orphan link #${entry.id} (localeId: ${entry.localeId}) - no preceding locale entry found.`);
+      } else if (entry.type === 'link' && entry.localeId !== null && entry.localeId !== -1) {
+        if (!groupsMap.has(entry.localeId)) {
+          groupsMap.set(entry.localeId, {
+            localeId: entry.localeId,
+            description: entry.localeDescription || '',
+            entries: []
+          });
         }
+        groupsMap.get(entry.localeId).entries.push(entry);
       }
     }
-    return groups;
+    return Array.from(groupsMap.values());
   }
 
   /**
