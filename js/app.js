@@ -236,6 +236,7 @@ const checkoutResults = document.getElementById('checkout-results');
 const virtualLocaleDrawer = document.getElementById('virtual-locale-drawer');
 const virtualLocaleList = document.getElementById('virtual-locale-list');
 const virtualLocaleCount = document.getElementById('virtual-locale-count');
+const btnFormalizeAllVl = document.getElementById('btn-formalize-all-vl');
 const navGridContainer = document.getElementById('nav-grid-container');
 const localeEditorContainer = document.getElementById('locale-editor-container');
 const fileInputMap = document.getElementById('file-input-map');
@@ -358,6 +359,10 @@ btnToggleVirtual.addEventListener('click', () => {
     lineList.render();
   }
 });
+
+if (btnFormalizeAllVl) {
+  btnFormalizeAllVl.addEventListener('click', formalizeAllVirtualLocales);
+}
 
 function updateVirtualLocaleUI() {
   if (!showVirtualLocales) return;
@@ -1085,7 +1090,12 @@ function onNavigateToPhoto(photoId, fromCommand) {
     
     // Only auto-stitch if it's an explicit manual link, not an autoLink
     if (revCmd && currentEntry && currentEntry.links[fromCommand] === photoId) {
-      if (!targetEntry.links[revCmd]) {
+      // Guard: do not auto-stitch if targetEntry already links back to currentEntry
+      // using ANY command. For example, if we arrived via an 'e' or 'z' link, 'b' acts
+      // as an escape to return to the base image, so we shouldn't stitch 'f' on the base image.
+      const alreadyLinkedBack = Object.keys(targetEntry.links).some(cmd => targetEntry.links[cmd] === currentEntry.id);
+      
+      if (!targetEntry.links[revCmd] && !alreadyLinkedBack) {
         // Guard: never auto-stitch 'f' (Forward) onto the closed member of a door pair.
         // 'f' is door-open-only — writing it to a closed door entry causes the
         // "Not Allowed" overlay to appear on its Forward cell.
@@ -2467,17 +2477,11 @@ function discardVirtualLocale() {
   setMode('view');
 }
 
-function commitVirtualLocale(description) {
-  if (!activeVirtualLocale) return;
-  const vl = activeVirtualLocale;
-  
+function finalizeVirtualLocale(vl, description) {
   // 1. Validate complete heading coverage
   const unassigned = vl.members.filter(m => !vl.inferredHeadings.has(m.id));
-  if (unassigned.length > 0) {
-    showToast(`Cannot formalize: ${unassigned.length} views still need headings.`);
-    return;
-  }
-  
+  if (unassigned.length > 0) return null;
+
   // 2. Allocate new ID
   const newLocaleId = tourMap.getNextLocaleId();
   
@@ -2508,12 +2512,24 @@ function commitVirtualLocale(description) {
   });
   
   // 5. Append locale entry to map
-  // To keep it clean, insert the locale definition line right before its first member
   const firstMemberIndex = tourMap.entries.findIndex(e => e.id === vl.members[0].id);
   if (firstMemberIndex !== -1) {
     tourMap.entries.splice(firstMemberIndex, 0, localeEntry);
   } else {
     tourMap.entries.push(localeEntry);
+  }
+  
+  return localeEntry;
+}
+
+function commitVirtualLocale(description) {
+  if (!activeVirtualLocale) return;
+  const vl = activeVirtualLocale;
+  
+  const localeEntry = finalizeVirtualLocale(vl, description);
+  if (!localeEntry) {
+    showToast(`Cannot formalize: some views still need headings.`);
+    return;
   }
   
   // 6. Clean up state
@@ -2532,5 +2548,33 @@ function commitVirtualLocale(description) {
     lineList.scrollToIndex(newIdx);
   }
   
-  showToast(`Formalized Locale #${newLocaleId}`);
+  showToast(`Formalized Locale #${localeEntry.localeId}`);
+}
+
+function formalizeAllVirtualLocales() {
+  const vls = getVirtualLocales();
+  let formalizedCount = 0;
+
+  vls.forEach(vl => {
+    // Check if fully inferred
+    const unassigned = vl.members.filter(m => !vl.inferredHeadings.has(m.id));
+    if (unassigned.length === 0) {
+      finalizeVirtualLocale(vl, `Locale ${tourMap.getNextLocaleId()}`);
+      formalizedCount++;
+    }
+  });
+
+  if (formalizedCount > 0) {
+    if (activeVirtualLocale) {
+      activeVirtualLocale = null;
+      virtualLocaleUndoStack = [];
+      setMode('view');
+    }
+    markDirty();
+    computeAutoLinks(tourMap);
+    lineList.render();
+    showToast(`Successfully formalized ${formalizedCount} virtual locale(s).`);
+  } else {
+    showToast(`No complete virtual locales found to formalize.`);
+  }
 }
