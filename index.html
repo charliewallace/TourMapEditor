@@ -104,8 +104,11 @@
 
       <!-- Return Banner (for "leave and fix" workflow) -->
       <div id="return-banner" class="return-banner hidden">
-         <span id="return-banner-text">Return to...</span>
-         <div class="return-banner-actions">
+         <div style="display: flex; flex-direction: column; overflow: hidden; white-space: nowrap; padding-right: 16px;">
+            <span id="return-banner-text">Return to...</span>
+            <span id="return-banner-subtext" style="font-size: 11px; font-weight: normal; opacity: 0.9; overflow: hidden; text-overflow: ellipsis; max-width: 100%; display: none;"></span>
+         </div>
+         <div class="return-banner-actions" style="flex-shrink: 0;">
             <button id="btn-return-action" class="btn-return-action">Return</button>
             <button id="btn-return-dismiss" class="btn-return-dismiss" title="Dismiss">&times;</button>
          </div>

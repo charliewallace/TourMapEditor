@@ -165,14 +165,23 @@ function getVirtualLocales() {
 /**
  * Display the "Return to..." banner with an action callback.
  */
-function showReturnBanner(text, actionCallback) {
+function showReturnBanner(text, actionCallback, subtext = null) {
   const banner = document.getElementById('return-banner');
   const textEl = document.getElementById('return-banner-text');
+  const subtextEl = document.getElementById('return-banner-subtext');
   const btnAction = document.getElementById('btn-return-action');
   const btnDismiss = document.getElementById('btn-return-dismiss');
   
   if (banner && textEl && btnAction && btnDismiss) {
     textEl.textContent = text;
+    if (subtextEl) {
+      if (subtext) {
+        subtextEl.textContent = subtext;
+        subtextEl.style.display = 'block';
+      } else {
+        subtextEl.style.display = 'none';
+      }
+    }
     btnAction.onclick = actionCallback;
     btnDismiss.onclick = hideReturnBanner;
     banner.classList.remove('hidden');
@@ -1960,19 +1969,20 @@ function showCheckoutReport() {
         }
         
         returnContext = { type: 'checkout' };
+        const plainMsg = issue.message.replace(/<[^>]*>?/gm, ''); // Strip HTML tags
         showReturnBanner('Return to Checkout Report', () => {
            showCheckoutReport();
            document.getElementById('checkout-modal').classList.remove('hidden');
            hideReturnBanner();
-        });
+        }, plainMsg);
         
         onLineSelected(issue.lineIndex);
         lineList.scrollToIndex(issue.lineIndex);
         checkoutModal.classList.add('hidden');
         // Ensure the raw line is visible to show the offending tokens
         if (rawLineEditor.el) {
-          rawLineEditor.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          rawLineEditor.el.focus();
+           rawLineEditor.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+           rawLineEditor.el.focus();
         }
       };
       

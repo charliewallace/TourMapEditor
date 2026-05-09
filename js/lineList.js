@@ -46,8 +46,27 @@ export class LineList {
       if (entry.type === 'description' || entry.type === 'blank') return;
 
       const label = this._getLabel(entry);
+      const badgeText = this._getBadge(entry);
       // Filter
-      if (this.filterText && !label.toLowerCase().includes(this.filterText)) return;
+      let match = false;
+      if (!this.filterText) {
+        match = true;
+      } else {
+        if (label.toLowerCase().includes(this.filterText)) match = true;
+        else if (badgeText.toLowerCase().includes(this.filterText)) match = true;
+        else if (entry.type === 'link') {
+          for (const cmd in entry.links) {
+            if (String(entry.links[cmd]).toLowerCase().includes(this.filterText)) {
+              match = true;
+              break;
+            }
+          }
+          if (!match && entry.userDefined && String(entry.userDefined.targetId).toLowerCase().includes(this.filterText)) {
+            match = true;
+          }
+        }
+      }
+      if (!match) return;
 
       const item = document.createElement('div');
       item.className = `line-item type-${entry.type}`;
