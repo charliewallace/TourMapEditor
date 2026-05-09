@@ -3,6 +3,8 @@
  * Detects broken links, missing assets, and unsupported command codes.
  */
 
+import { discoverVirtualLocales } from './virtualLocaleDiscovery.js';
+
 export class MapValidator {
   /**
    * Performs a comprehensive validation of the TourMap.
@@ -14,6 +16,27 @@ export class MapValidator {
     const issues = [];
     const linkEntries = tourMap.getLinkEntries();
     const validIds = new Set(linkEntries.map(e => e.id));
+
+    // Discover virtual locales for validation
+    const virtualLocales = discoverVirtualLocales(tourMap);
+    const vlByMemberId = new Map();
+    virtualLocales.forEach(vl => {
+      vl.members.forEach(m => vlByMemberId.set(m.id, vl));
+    });
+
+    const getLocaleGroupId = (entryId) => {
+      const e = tourMap.findById(entryId);
+      if (!e) return null;
+      if (e.localeId != null && e.localeId > 0) return e.localeId;
+      const vl = vlByMemberId.get(entryId);
+      if (vl) return vl.id;
+      return null;
+    };
+
+    const formatLocaleName = (id) => {
+      if (!id) return 'Unassigned';
+      return id > 0 ? `Formal #${id}` : `Virtual (Auto)`;
+    };
 
     tourMap.entries.forEach((entry, index) => {
       if (entry.type !== 'link') return;
@@ -235,6 +258,52 @@ export class MapValidator {
                 lineIndex: index,
                 id: entry.id,
                 actionData: { type: 'open_door_ref', cmd, openId: targetId, closedId }
+              });
+            }
+          }
+        }
+      }
+
+      // 10. Cross-locale l/r/a Anomaly
+      // Directional panning (l, r, a) implies turning around in the same physical location.
+      // Therefore, they should never point to an image outside the current locale.
+      if (!isLooseEntry) {
+        for (const cmd of ['l', 'r', 'a']) {
+          const targetId = entry.links[cmd];
+          if (targetId && validIds.has(targetId)) {
+            const myGroupId = getLocaleGroupId(entry.id);
+            const targetGroupId = getLocaleGroupId(targetId);
+            if (myGroupId !== targetGroupId && myGroupId !== null && targetGroupId !== null) {
+              issues.push({
+                type: 'warning',
+                category: 'Cross-locale Anomaly',
+                message: `Link '${cmd}' points outside the locale to #${targetId}. Directional panning should be contained within a single location. Add * to suppress.`,
+                lineIndex: index,
+                id: entry.id,
+                actionData: { type: 'cross_locale_lr', cmd, targetId }
+              });
+            }
+          }
+        }
+      }
+
+      // 11. Split Door Pairs
+      // Members of a door pair (o/c links) represent the same physical view with a door open/closed.
+      // They must belong to the exact same locale.
+      if (!isLooseEntry) {
+        for (const cmd of ['o', 'c']) {
+          const targetId = entry.links[cmd];
+          if (targetId && validIds.has(targetId)) {
+            const myGroupId = getLocaleGroupId(entry.id);
+            const targetGroupId = getLocaleGroupId(targetId);
+            if (myGroupId !== targetGroupId) {
+              issues.push({
+                type: 'warning',
+                category: 'Split Door Pair',
+                message: `Door pair is split across locales. #${entry.id} is in ${formatLocaleName(myGroupId)}, but partner #${targetId} is in ${formatLocaleName(targetGroupId)}. Add * to suppress.`,
+                lineIndex: index,
+                id: entry.id,
+                actionData: { type: 'split_door', cmd, targetId }
               });
             }
           }

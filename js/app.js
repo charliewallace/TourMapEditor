@@ -137,6 +137,8 @@ let showVirtualLocales = false;     // Toggle state (always starts off)
 let activeVirtualLocale = null;     // VirtualLocale currently being formalized
 let virtualLocaleUndoStack = [];    // For single-step undo during formalization
 
+let returnContext = null;           // Stores state for the "leave and fix" workflow
+
 /**
  * Recompute virtual locales from the current link graph.
  * Runs discovery + heading inference for all results, then caches.
@@ -158,6 +160,34 @@ function getVirtualLocales() {
     recomputeVirtualLocales();
   }
   return virtualLocalesCache;
+}
+
+/**
+ * Display the "Return to..." banner with an action callback.
+ */
+function showReturnBanner(text, actionCallback) {
+  const banner = document.getElementById('return-banner');
+  const textEl = document.getElementById('return-banner-text');
+  const btnAction = document.getElementById('btn-return-action');
+  const btnDismiss = document.getElementById('btn-return-dismiss');
+  
+  if (banner && textEl && btnAction && btnDismiss) {
+    textEl.textContent = text;
+    btnAction.onclick = actionCallback;
+    btnDismiss.onclick = hideReturnBanner;
+    banner.classList.remove('hidden');
+  }
+}
+
+/**
+ * Hide the return banner and clear the context.
+ */
+function hideReturnBanner() {
+  const banner = document.getElementById('return-banner');
+  if (banner) {
+    banner.classList.add('hidden');
+  }
+  returnContext = null;
 }
 
 /**
@@ -382,6 +412,12 @@ function setMode(mode) {
   } else {
     // mode === 'view'
     if (activeVirtualLocale) {
+      returnContext = { type: 'virtual_locale', vl: activeVirtualLocale };
+      showReturnBanner('Return to Formalization', () => {
+         previewVirtualLocale(returnContext.vl);
+         hideReturnBanner();
+      });
+
       activeVirtualLocale = null;
       virtualLocaleUndoStack = [];
     }
@@ -1896,6 +1932,11 @@ function showCheckoutReport() {
             <button class="btn-suppress-nav-ambiguity" data-entry-id="${issue.id}"
               style="margin-left:8px; padding:2px 8px; border-radius:4px; font-size:11px; background:var(--bg-elevated); color:var(--text-secondary); border:1px solid var(--border); cursor:pointer;"
               title="Add * loose marker to suppress this warning — use only if the l/r links are intentional here">Suppress (*)</button>`;
+        } else if (issue.actionData.type === 'cross_locale_lr' || issue.actionData.type === 'split_door') {
+          actionBtnHtml = `
+            <button class="btn-suppress-locale-anomaly" data-entry-id="${issue.id}"
+              style="margin-left:8px; padding:2px 8px; border-radius:4px; font-size:11px; background:var(--bg-elevated); color:var(--text-secondary); border:1px solid var(--border); cursor:pointer;"
+              title="Add * loose marker to suppress this warning">Suppress (*)</button>`;
         }
       }
 
@@ -1917,6 +1958,13 @@ function showCheckoutReport() {
            showIssueDetails(issue);
            return;
         }
+        
+        returnContext = { type: 'checkout' };
+        showReturnBanner('Return to Checkout Report', () => {
+           showCheckoutReport();
+           document.getElementById('checkout-modal').classList.remove('hidden');
+           hideReturnBanner();
+        });
         
         onLineSelected(issue.lineIndex);
         lineList.scrollToIndex(issue.lineIndex);
@@ -2001,6 +2049,24 @@ function showCheckoutReport() {
             const entry = tourMap.findById(entryId);
             if (entry && entry.links[cmd]) {
               delete entry.links[cmd];
+              entry.markModified();
+              markDirty();
+              runValidation();
+              showCheckoutReport();
+              refreshCurrentSelection();
+            }
+          };
+        }
+
+        // "Suppress (*)" button for Locale Anomalies
+        const suppressLocaleAnomalyBtn = item.querySelector('.btn-suppress-locale-anomaly');
+        if (suppressLocaleAnomalyBtn) {
+          suppressLocaleAnomalyBtn.onclick = (e) => {
+            e.stopPropagation();
+            const entryId = suppressLocaleAnomalyBtn.dataset.entryId;
+            const entry = tourMap.findById(entryId);
+            if (entry && !entry.unsupportedTokens.includes('*loose')) {
+              entry.unsupportedTokens.push('*loose');
               entry.markModified();
               markDirty();
               runValidation();

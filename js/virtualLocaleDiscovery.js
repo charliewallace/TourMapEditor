@@ -195,7 +195,7 @@ export function discoverVirtualLocales(tourMap) {
 
     while (bfsQueue.length > 0) {
       const current = bfsQueue.shift();
-      if (current.id == null || ringVisited.has(current.id)) continue;
+      if (current.id == null || ringVisited.has(current.id) || visited.has(current.id)) continue;
 
       // Don't cross into formal locales
       if (current.localeId != null && current.localeId > 0) continue;
